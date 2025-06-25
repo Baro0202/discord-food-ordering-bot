@@ -49,7 +49,7 @@ class Database {
                 date DATE NOT NULL UNIQUE,
                 menu_items TEXT NOT NULL, -- JSON array of menu item IDs
                 special_note TEXT,
-                order_deadline TIME DEFAULT '10:00',
+                order_deadline TIME DEFAULT '09:45',
                 delivery_time TIME DEFAULT '12:00',
                 active BOOLEAN DEFAULT 1,
                 created_at DATETIME DEFAULT CURRENT_TIMESTAMP
@@ -106,7 +106,7 @@ class Database {
   async insertDefaultSettings() {
     const defaultSettings = [
       ["currency", "VND", "Default currency"],
-      ["order_deadline", "10:00", "Daily order deadline"],
+      ["order_deadline", "09:45", "Daily order deadline"],
       ["delivery_time", "12:00", "Daily delivery time"],
       ["auto_menu_reminder", "true", "Send automatic menu reminders"],
       [

@@ -6,8 +6,8 @@ const {
   ButtonBuilder,
   ButtonStyle,
 } = require("discord.js");
-const SupabaseDatabase = require("../database/supabase");
-const moment = require("moment");
+const { getInitializedDatabase } = require("../utils/databaseHelper");
+const TimeHelper = require("../utils/timeHelper");
 
 module.exports = {
   data: new SlashCommandBuilder()
@@ -17,23 +17,45 @@ module.exports = {
   async execute(interaction) {
     await interaction.deferReply({ flags: 64 });
 
-    const database = new SupabaseDatabase();
-    await database.init();
+    const database = await getInitializedDatabase();
 
     try {
-      const today = moment().format("YYYY-MM-DD");
-      const currentTime = moment().format("HH:mm");
-      const orderDeadline = process.env.ORDER_DEADLINE || "23:59";
+      // Check if ordering is allowed now
+      const orderDeadline = process.env.ORDER_DEADLINE || "09:45";
+      const orderStartTime = process.env.ORDER_START_TIME || "08:00";
+
+      const vnTime = TimeHelper.currentTime();
+
+      // Check if it's before order start time
+      if (
+        orderStartTime !== "00:00" &&
+        TimeHelper.isBeforeStartTime(orderStartTime)
+      ) {
+        await interaction.editReply({
+          embeds: [
+            {
+              color: 0xff9900,
+              title: "⏰ Chưa đến giờ đặt món",
+              description: `Thời gian đặt món: **${orderStartTime} - ${orderDeadline}**\nVui lòng quay lại sau ${orderStartTime}!`,
+              timestamp: TimeHelper.embedTimestamp(),
+            },
+          ],
+        });
+        return;
+      }
 
       // Check if it's past order deadline (chỉ check nếu không phải 23:59)
-      if (orderDeadline !== "23:59" && currentTime > orderDeadline) {
+      if (
+        orderDeadline !== "23:59" &&
+        TimeHelper.isPastDeadline(orderDeadline)
+      ) {
         await interaction.editReply({
           embeds: [
             {
               color: 0xff0000,
               title: "⏰ Đã hết hạn đặt món",
-              description: `Hạn đặt món hôm nay là **${orderDeadline}**.\nVui lòng đặt sớm hơn vào ngày mai!`,
-              timestamp: new Date(),
+              description: `Thời gian đặt món: **${orderStartTime} - ${orderDeadline}**\nVui lòng đặt sớm hơn vào ngày mai!`,
+              timestamp: TimeHelper.embedTimestamp(),
             },
           ],
         });
@@ -41,7 +63,7 @@ module.exports = {
       }
 
       // Get today's menu
-      const dailyMenu = await database.getDailyMenu(today);
+      const dailyMenu = await database.getDailyMenu(TimeHelper.today());
 
       if (!dailyMenu) {
         await interaction.editReply({
@@ -51,7 +73,7 @@ module.exports = {
               title: "📋 Chưa có menu hôm nay",
               description:
                 "Admin chưa cập nhật menu cho hôm nay.\nVui lòng thử lại sau!",
-              timestamp: new Date(),
+              timestamp: TimeHelper.embedTimestamp(),
             },
           ],
         });
@@ -84,7 +106,7 @@ module.exports = {
               color: 0xff9900,
               title: "🍽️ Không có món nào",
               description: "Hiện tại không có món ăn nào khả dụng.",
-              timestamp: new Date(),
+              timestamp: TimeHelper.embedTimestamp(),
             },
           ],
         });
@@ -105,13 +127,13 @@ module.exports = {
         .setColor(0x00ff00)
         .setTitle("🍽️ Menu Hôm Nay")
         .setDescription(
-          `📅 **Ngày:** ${moment(today).format(
-            "DD/MM/YYYY"
-          )}\n⏰ **Hạn đặt:** ${orderDeadline}\n🚚 **Giao hàng:** ${
+          `📅 **Ngày:** ${TimeHelper.formatDate(
+            TimeHelper.today()
+          )}\n⏰ **Thời gian đặt:** ${orderStartTime} - ${orderDeadline}\n🚚 **Giao hàng:** ${
             dailyMenu.delivery_time
           }`
         )
-        .setTimestamp();
+        .setTimestamp(TimeHelper.embedTimestamp());
 
       if (dailyMenu.special_note) {
         embed.addFields({
@@ -184,7 +206,7 @@ module.exports = {
             color: 0xff0000,
             title: "❌ Lỗi",
             description: "Có lỗi xảy ra khi tải menu. Vui lòng thử lại!",
-            timestamp: new Date(),
+            timestamp: TimeHelper.embedTimestamp(),
           },
         ],
       });

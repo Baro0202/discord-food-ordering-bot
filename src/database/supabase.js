@@ -54,7 +54,7 @@ class SupabaseDatabase {
         menu_items INTEGER[],
         special_note TEXT,
         delivery_time TIME DEFAULT '12:00',
-        order_deadline TIME DEFAULT '10:00',
+        order_deadline TIME DEFAULT '09:45',
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
       );
 
@@ -212,6 +212,11 @@ class SupabaseDatabase {
     return data;
   }
 
+  // Alias for compatibility
+  async getOrderById(orderId) {
+    return this.getOrder(orderId);
+  }
+
   async getOrdersByDate(date) {
     const { data, error } = await this.supabase
       .from("orders")
@@ -228,8 +233,22 @@ class SupabaseDatabase {
       .from("orders")
       .select("*")
       .eq("user_id", userId)
+      .neq("status", "cancelled")
       .order("created_at", { ascending: false })
       .limit(limit);
+
+    if (error) throw error;
+    return data || [];
+  }
+
+  async getUserOrdersByDate(userId, date) {
+    const { data, error } = await this.supabase
+      .from("orders")
+      .select("*")
+      .eq("user_id", userId)
+      .eq("menu_date", date)
+      .neq("status", "cancelled")
+      .order("created_at", { ascending: false });
 
     if (error) throw error;
     return data || [];

@@ -6,8 +6,9 @@ const express = require("express");
 require("dotenv").config();
 
 const SupabaseDatabase = require("./database/supabase");
+const EnhancedSupabaseDatabase = require("./database/enhancedSupabase");
 const { setupCommands } = require("./utils/deployCommands");
-const moment = require("moment");
+const TimeHelper = require("./utils/timeHelper");
 
 class FoodOrderBot {
   constructor() {
@@ -25,18 +26,37 @@ class FoodOrderBot {
 
     this.setupHealthChecks();
     this.client.commands = new Collection();
-    this.database = new SupabaseDatabase();
+
+    // Sử dụng Enhanced Database với Kafka events nếu KAFKA_ENABLED=true
+    // Fallback về SupabaseDatabase nếu Kafka disabled
+    const useKafka = process.env.KAFKA_ENABLED !== "false";
+    this.database = useKafka
+      ? new EnhancedSupabaseDatabase()
+      : new SupabaseDatabase();
+    console.log(`[INFO] Using ${useKafka ? "Enhanced" : "Standard"} Database`);
+
     this.loadCommands();
     this.loadEvents();
     this.setupCronJobs();
   }
 
   setupHealthChecks() {
-    this.app.get("/health", (req, res) => {
+    this.app.get("/health", async (req, res) => {
+      // Check Kafka health if using Enhanced Database
+      let kafkaHealth = { enabled: false };
+      if (this.database && typeof this.database.isKafkaHealthy === "function") {
+        try {
+          const isHealthy = await this.database.isKafkaHealthy();
+          kafkaHealth = { enabled: true, healthy: isHealthy };
+        } catch (error) {
+          kafkaHealth = { enabled: true, healthy: false, error: error.message };
+        }
+      }
+
       res.status(200).json({
         status: "OK",
         uptime: process.uptime(),
-        timestamp: new Date().toISOString(),
+        timestamp: TimeHelper.utcTimestamp(),
         bot: this.client.user
           ? {
               username: this.client.user.username,
@@ -44,6 +64,7 @@ class FoodOrderBot {
               ready: this.client.readyAt ? true : false,
             }
           : "Not logged in",
+        kafka: kafkaHealth,
       });
     });
 
@@ -129,27 +150,27 @@ class FoodOrderBot {
   }
 
   setupCronJobs() {
-    // Schedule daily menu reminder at 9:00 AM (Monday to Friday)
+    // Schedule daily menu reminder at 8:00 AM (Monday to Friday) - when ordering starts
     cron.schedule(
-      "0 9 * * 1-5",
+      "0 8 * * 1-5",
       async () => {
         console.log("[CRON] Sending daily menu reminder...");
         await this.sendMenuReminder();
       },
       {
-        timezone: "Asia/Ho_Chi_Minh",
+        timezone: TimeHelper.getTimezone(),
       }
     );
 
-    // Schedule order deadline reminder at 9:45 AM (Monday to Friday)
+    // Schedule order deadline reminder at 9:30 AM (Monday to Friday) - 15 minutes before deadline
     cron.schedule(
-      "45 9 * * 1-5",
+      "30 9 * * 1-5",
       async () => {
         console.log("[CRON] Sending order deadline reminder...");
         await this.sendDeadlineReminder();
       },
       {
-        timezone: "Asia/Ho_Chi_Minh",
+        timezone: TimeHelper.getTimezone(),
       }
     );
 
@@ -158,20 +179,22 @@ class FoodOrderBot {
 
   async sendMenuReminder() {
     try {
-      const channelId = process.env.ORDER_CHANNEL_ID;
+      const channelId = process.env.REMINDER_CHANNEL_ID;
       if (!channelId) return;
 
       const channel = this.client.channels.cache.get(channelId);
       if (!channel) return;
+
+      const orderStartTime = process.env.ORDER_START_TIME || "08:00";
+      const orderDeadline = process.env.ORDER_DEADLINE || "09:45";
 
       await channel.send({
         embeds: [
           {
             color: 0x00ff00,
             title: "🍽️ Menu hôm nay đã sẵn sàng!",
-            description:
-              "Sử dụng `/menu` để xem menu và đặt món.\n⏰ **Hạn đặt:** 10:00 AM",
-            timestamp: new Date(),
+            description: `Sử dụng \`/menu\` để xem menu và đặt món.\n⏰ **Thời gian đặt:** ${orderStartTime} - ${orderDeadline}`,
+            timestamp: TimeHelper.embedTimestamp(),
             footer: {
               text: "Bot Đặt Cơm",
             },
@@ -185,20 +208,21 @@ class FoodOrderBot {
 
   async sendDeadlineReminder() {
     try {
-      const channelId = process.env.ORDER_CHANNEL_ID;
+      const channelId = process.env.REMINDER_CHANNEL_ID;
       if (!channelId) return;
 
       const channel = this.client.channels.cache.get(channelId);
       if (!channel) return;
+
+      const orderDeadline = process.env.ORDER_DEADLINE || "09:45";
 
       await channel.send({
         embeds: [
           {
             color: 0xff9900,
             title: "⏰ Sắp hết hạn đặt món!",
-            description:
-              "Còn **15 phút** nữa là hết hạn đặt món hôm nay.\nNhanh tay sử dụng `/menu` để đặt!",
-            timestamp: new Date(),
+            description: `Còn **15 phút** nữa là hết hạn đặt món hôm nay (${orderDeadline}).\nNhanh tay sử dụng \`/menu\` để đặt!`,
+            timestamp: TimeHelper.embedTimestamp(),
             footer: {
               text: "Bot Đặt Cơm",
             },
@@ -216,10 +240,27 @@ const bot = new FoodOrderBot();
 bot.start();
 
 // Graceful shutdown
-process.on("SIGINT", () => {
-  console.log("[INFO] Received SIGINT, shutting down gracefully");
-  bot.client.destroy();
+async function gracefulShutdown(signal) {
+  console.log(`[INFO] Received ${signal}, shutting down gracefully`);
+
+  try {
+    // Disconnect from Kafka and database
+    if (bot.database && typeof bot.database.disconnect === "function") {
+      await bot.database.disconnect();
+      console.log("[INFO] Database and Kafka disconnected");
+    }
+
+    // Destroy Discord client
+    bot.client.destroy();
+    console.log("[INFO] Discord client destroyed");
+  } catch (error) {
+    console.error("[ERROR] Error during shutdown:", error);
+  }
+
   process.exit(0);
-});
+}
+
+process.on("SIGINT", () => gracefulShutdown("SIGINT"));
+process.on("SIGTERM", () => gracefulShutdown("SIGTERM"));
 
 module.exports = FoodOrderBot;

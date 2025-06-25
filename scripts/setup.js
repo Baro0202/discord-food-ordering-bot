@@ -157,11 +157,16 @@ async function setupDatabase() {
     const menuItems = await database.getMenuItems();
     const todayMenuItems = menuItems.slice(0, 8).map((item) => item.id); // First 8 items
 
-    await database.createDailyMenu(
-      today,
-      todayMenuItems,
-      "Menu đặc biệt hôm nay! Đừng quên đặt trước 10:00 AM 😋"
-    );
+    const sampleMessages = [
+      "Cơm hôm nay ngon lắm! 🍱",
+      "Có thêm món mới hôm nay nhé! 🆕",
+      "Menu đặc biệt hôm nay! Đừng quên đặt trước 9:45 AM 😋",
+    ];
+
+    const randomMessage =
+      sampleMessages[Math.floor(Math.random() * sampleMessages.length)];
+
+    await database.createDailyMenu(today, todayMenuItems, randomMessage);
 
     console.log("✅ Đã tạo menu hôm nay");
 

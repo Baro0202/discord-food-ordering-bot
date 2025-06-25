@@ -4,11 +4,11 @@ const {
   handleCancelButton,
   handlePaymentButton,
   handleAdminUpdateButton,
+  handleConfirmPaymentButton,
   handleQuickMenu,
 } = require("../handlers/buttonHandlers");
 const {
   handleMenuItemSelection,
-  handleQuantitySelection,
   handleCartCheckout,
   handleCartClear,
 } = require("../handlers/selectMenuHandlers");
@@ -132,7 +132,11 @@ async function handleButtonInteraction(interaction) {
       await handleOrderButton(interaction, params);
       break;
     case "confirm":
-      await handleConfirmButton(interaction, params);
+      if (params[0] === "payment") {
+        await handleConfirmPaymentButton(interaction, params.slice(1));
+      } else {
+        await handleConfirmButton(interaction, params);
+      }
       break;
     case "cancel":
       await handleCancelButton(interaction, params);
@@ -175,9 +179,6 @@ async function handleSelectMenuInteraction(interaction) {
   switch (action) {
     case "menuitems":
       await handleMenuItemSelection(interaction, params);
-      break;
-    case "quantity":
-      await handleQuantitySelection(interaction, params);
       break;
     default:
       await interaction.reply({

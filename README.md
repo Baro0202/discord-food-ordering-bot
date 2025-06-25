@@ -103,6 +103,7 @@ npm run dev
 - \`/admin updateorder\` - Cập nhật trạng thái đơn hàng
 - \`/admin listitems\` - Xem tất cả món ăn
 - \`/admin stats\` - Xem thống kê
+- \`/admin sendpaymentnotify\` - Gửi thông báo thanh toán đến tất cả người dùng có đơn hàng chưa thanh toán
 
 ### Quy trình đặt hàng
 
@@ -123,8 +124,8 @@ npm run dev
 
 ## ⏰ Lịch trình tự động
 
-- **09:00** - Gửi thông báo menu hôm nay
-- **09:45** - Nhắc nhở sắp hết hạn đặt món
+- **09:00** - Gửi thông báo menu hôm nay (bắt đầu đặt món)
+- **09:45** - Nhắc nhở sắp hết hạn đặt món (còn 15 phút)
 - **10:00** - Hết hạn đặt món
 - **12:00** - Thời gian giao hàng (có thể tùy chỉnh)
 
@@ -174,65 +175,27 @@ src/
 
 ### Thay đổi thời gian đặt hàng
 
-Chỉnh sửa trong file \`src/events/ready.js\`:
-\`\`\`javascript
-// Thay đổi thời gian nhắc nhở (hiện tại 9:00)
-cron.schedule('0 9 \* \* 1-5', async () => {
-// Code nhắc nhở
+Chỉnh sửa trong file `src/index.js`:
+
+```javascript
+// Thay đổi thời gian nhắc nhở menu (hiện tại 9:00 AM)
+cron.schedule("0 9 * * 1-5", async () => {
+  // Code nhắc nhở
 });
-\`\`\`
+
+// Thay đổi thời gian nhắc nhở deadline (hiện tại 9:45 AM)
+cron.schedule("45 9 * * 1-5", async () => {
+  // Code nhắc nhở deadline
+});
+```
+
+Hoặc cập nhật biến môi trường trong file `.env`:
+
+```env
+ORDER_START_TIME=09:00
+ORDER_DEADLINE=10:00
+```
 
 ### Thêm phương thức thanh toán
 
-Tích hợp trong file \`src/handlers/buttonHandlers.js\` tại hàm \`handlePaymentButton\`:
-\`\`\`javascript
-// Tích hợp Stripe, PayPal, VNPay, etc.
-\`\`\`
-
-### Tùy chỉnh embed colors và messages
-
-Thay đổi các giá trị hex color và text trong các file handlers.
-
-## 🤝 Đóng góp
-
-1. Fork dự án
-2. Tạo feature branch (\`git checkout -b feature/AmazingFeature\`)
-3. Commit changes (\`git commit -m 'Add some AmazingFeature'\`)
-4. Push to branch (\`git push origin feature/AmazingFeature\`)
-5. Tạo Pull Request
-
-## 📝 Roadmap
-
-- [ ] Tích hợp thanh toán online (Stripe/VNPay)
-- [ ] Web dashboard cho admin
-- [ ] Hỗ trợ nhiều loại tiền tệ
-- [ ] Export báo cáo Excel/PDF
-- [ ] Hỗ trợ đặt trước cho nhiều ngày
-- [ ] Tích hợp với API giao hàng
-- [ ] Mobile app companion
-- [ ] AI chatbot cho support
-
-## 📄 License
-
-Dự án này được phân phối dưới [MIT License](LICENSE).
-
-## 🆘 Hỗ trợ
-
-Nếu gặp vấn đề hoặc có câu hỏi:
-
-1. Kiểm tra [Issues](https://github.com/your-repo/issues)
-2. Tạo issue mới với tag phù hợp
-3. Liên hệ team development
-
-## 🙏 Cảm ơn
-
-- [Discord.js](https://discord.js.org/) - Discord API wrapper
-- [SQLite](https://www.sqlite.org/) - Database engine
-- [Node-cron](https://github.com/kelektiv/node-cron) - Cron job scheduler
-- [Moment.js](https://momentjs.com/) - Date handling
-
----
-
-Made with ❤️ for productive teams
-# discord-food-ordering-bot
-# discord-food-ordering-bot
+Tích hợp trong file \`src/handlers/buttonHandlers.js\` tại hàm \`

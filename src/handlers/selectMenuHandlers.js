@@ -5,15 +5,51 @@ const {
   ButtonBuilder,
   ButtonStyle,
 } = require("discord.js");
-const SupabaseDatabase = require("../database/supabase");
+const { getInitializedDatabase } = require("../utils/databaseHelper");
 const { userCarts } = require("./buttonHandlers");
-const moment = require("moment");
+const TimeHelper = require("../utils/timeHelper");
+const reliableMessaging = require("../utils/reliableMessaging");
 
 async function handleMenuItemSelection(interaction, params) {
   const selectedItemId = parseInt(interaction.values[0]);
+  const userId = interaction.user.id;
 
-  const database = new SupabaseDatabase();
-  await database.init();
+  // STEP 1: Check for rapid selection (prevent double-click issues)
+  if (reliableMessaging.isOperationInProgress(userId, "menu_selection")) {
+    await interaction.reply({
+      embeds: [
+        {
+          color: 0xff9900,
+          title: "⏳ Đang xử lý...",
+          description:
+            "Bạn đang thêm món vào giỏ hàng. Vui lòng đợi trong giây lát.",
+          footer: { text: "Không cần click nhiều lần" },
+        },
+      ],
+      ephemeral: true,
+    });
+    return;
+  }
+
+  // STEP 2: Immediate ACK for smooth UX
+  const operationId = await reliableMessaging.immediateAck(
+    interaction,
+    "menu_selection",
+    {
+      itemName: `Item #${selectedItemId}`,
+      quantity: "1",
+    }
+  );
+
+  if (!operationId) return; // Duplicate operation handled
+
+  // STEP 3: Async processing
+  processMenuSelection(interaction, selectedItemId, operationId);
+}
+
+async function processMenuSelection(interaction, selectedItemId, operationId) {
+  const userId = interaction.user.id;
+  const database = await getInitializedDatabase();
 
   try {
     // Get item using Supabase method
@@ -21,85 +57,32 @@ async function handleMenuItemSelection(interaction, params) {
     const item = allItems.find((i) => i.id === selectedItemId);
 
     if (!item) {
-      await interaction.reply({
-        content: "❌ Món ăn không khả dụng!",
-        ephemeral: true,
-      });
+      const errorMessage = {
+        embeds: [
+          {
+            color: 0xff0000,
+            title: "❌ Món ăn không khả dụng!",
+            description:
+              "Món ăn này hiện tại không có sẵn. Vui lòng chọn món khác.",
+            footer: { text: "Kiểm tra menu mới nhất với /menu" },
+          },
+        ],
+      };
+      await reliableMessaging.sendReliableMessage(
+        interaction,
+        errorMessage,
+        operationId
+      );
       return;
     }
 
-    // Create quantity selection menu
-    const quantityMenu = new StringSelectMenuBuilder()
-      .setCustomId(`quantity_${selectedItemId}`)
-      .setPlaceholder("Chọn số lượng...")
-      .addOptions([
-        { label: "1 phần", value: "1" },
-        { label: "2 phần", value: "2" },
-        { label: "3 phần", value: "3" },
-        { label: "4 phần", value: "4" },
-        { label: "5 phần", value: "5" },
-      ]);
-
-    const row = new ActionRowBuilder().addComponents(quantityMenu);
-
-    const embed = new EmbedBuilder()
-      .setColor(0x0099ff)
-      .setTitle(`🍽️ ${item.name}`)
-      .setDescription(item.description || "Không có mô tả")
-      .addFields(
-        { name: "💰 Giá", value: formatPrice(item.price), inline: true },
-        { name: "📂 Danh mục", value: item.category, inline: true }
-      )
-      .setTimestamp();
-
-    if (item.image_url) {
-      embed.setImage(item.image_url);
-    }
-
-    await interaction.reply({
-      content: "**Chọn số lượng bạn muốn đặt:**",
-      embeds: [embed],
-      components: [row],
-      ephemeral: true,
-    });
-  } catch (error) {
-    console.error("Error handling menu item selection:", error);
-    await interaction.reply({
-      content: "❌ Có lỗi xảy ra khi xử lý lựa chọn!",
-      ephemeral: true,
-    });
-  } finally {
-    database.close();
-  }
-}
-
-async function handleQuantitySelection(interaction, params) {
-  const itemId = parseInt(params[0]);
-  const quantity = parseInt(interaction.values[0]);
-  const userId = interaction.user.id;
-
-  const database = new SupabaseDatabase();
-  await database.init();
-
-  try {
-    // Get item using Supabase method
-    const allItems = await database.getMenuItems(true); // Only available items
-    const item = allItems.find((i) => i.id === itemId);
-
-    if (!item) {
-      await interaction.reply({
-        content: "❌ Món ăn không khả dụng!",
-        ephemeral: true,
-      });
-      return;
-    }
-
-    // Add to cart
+    // Directly add 1 quantity to cart (skip quantity selection)
+    const quantity = 1;
     let cart = userCarts.get(userId) || [];
 
     // Check if item already in cart
     const existingItemIndex = cart.findIndex(
-      (cartItem) => cartItem.itemId === itemId
+      (cartItem) => cartItem.item_id === selectedItemId
     );
 
     if (existingItemIndex >= 0) {
@@ -108,8 +91,11 @@ async function handleQuantitySelection(interaction, params) {
     } else {
       // Add new item
       cart.push({
-        itemId: itemId,
+        item_id: selectedItemId,
+        name: item.name,
+        price: item.price,
         quantity: quantity,
+        subtotal: item.price * quantity,
       });
     }
 
@@ -119,52 +105,103 @@ async function handleQuantitySelection(interaction, params) {
       (sum, cartItem) => sum + cartItem.quantity,
       0
     );
-    const subtotal = item.price * quantity;
 
-    const embed = new EmbedBuilder()
-      .setColor(0x00ff00)
-      .setTitle("✅ Đã thêm vào giỏ hàng!")
-      .addFields(
-        { name: "🍽️ Món ăn", value: item.name, inline: true },
-        { name: "🔢 Số lượng", value: quantity.toString(), inline: true },
-        { name: "💰 Thành tiền", value: formatPrice(subtotal), inline: true },
-        { name: "🛒 Tổng trong giỏ", value: `${totalInCart} món`, inline: true }
+    const totalAmount = cart.reduce(
+      (sum, cartItem) => sum + cartItem.subtotal,
+      0
+    );
+
+    // STEP 4: Send success message with retry
+    const successMessage = {
+      content: "**Đã thêm 1 phần vào giỏ hàng!**",
+      embeds: [
+        {
+          color: 0x00ff00,
+          title: "✅ Đã thêm vào giỏ hàng!",
+          description: `**${item.name}** - 1 phần`,
+          fields: [
+            { name: "💰 Giá", value: formatPrice(item.price), inline: true },
+            { name: "📂 Danh mục", value: item.category, inline: true },
+            {
+              name: "🛒 Tổng trong giỏ",
+              value: `${totalInCart} món`,
+              inline: true,
+            },
+          ],
+          thumbnail: item.image_url ? { url: item.image_url } : undefined,
+          timestamp: TimeHelper.embedTimestamp(),
+        },
+      ],
+      components: [
+        {
+          type: 1,
+          components: [
+            {
+              type: 2,
+              style: 2,
+              label: "🛍️ Tiếp tục chọn món",
+              custom_id: "continue_shopping",
+            },
+            {
+              type: 2,
+              style: 1,
+              label: "🛒 Xem giỏ hàng",
+              custom_id: "order_cart",
+            },
+            {
+              type: 2,
+              style: 3,
+              label: "✅ Đặt hàng ngay",
+              custom_id: "cart_checkout",
+            },
+          ],
+        },
+      ],
+    };
+
+    await reliableMessaging.sendReliableMessage(
+      interaction,
+      successMessage,
+      operationId
+    );
+
+    // Auto-save user info (non-blocking)
+    database
+      .upsertUser(
+        userId,
+        interaction.user.username,
+        interaction.user.displayName
       )
-      .setTimestamp();
-
-    const buttons = new ActionRowBuilder().addComponents(
-      new ButtonBuilder()
-        .setCustomId("order_cart")
-        .setLabel("🛒 Xem giỏ hàng")
-        .setStyle(ButtonStyle.Primary),
-      new ButtonBuilder()
-        .setCustomId("continue_shopping")
-        .setLabel("🛍️ Tiếp tục mua")
-        .setStyle(ButtonStyle.Secondary),
-      new ButtonBuilder()
-        .setCustomId("cart_checkout")
-        .setLabel("✅ Đặt hàng ngay")
-        .setStyle(ButtonStyle.Success)
-    );
-
-    await interaction.reply({
-      embeds: [embed],
-      components: [buttons],
-      ephemeral: true,
-    });
-
-    // Auto-save user info
-    await database.upsertUser(
-      userId,
-      interaction.user.username,
-      interaction.user.displayName
-    );
+      .catch((error) => {
+        console.error("Failed to save user info:", error.message);
+      });
   } catch (error) {
-    console.error("Error handling quantity selection:", error);
-    await interaction.reply({
-      content: "❌ Có lỗi xảy ra khi thêm vào giỏ hàng!",
-      ephemeral: true,
-    });
+    console.error("Error handling menu item selection:", error);
+
+    const errorMessage = {
+      embeds: [
+        {
+          color: 0xff0000,
+          title: "❌ Lỗi thêm món vào giỏ hàng",
+          description: "Có lỗi xảy ra khi xử lý lựa chọn. Vui lòng thử lại!",
+          fields: [
+            {
+              name: "💡 Hướng dẫn",
+              value:
+                "• Kiểm tra kết nối mạng\n• Thử chọn món khác\n• Liên hệ admin nếu vấn đề tiếp tục",
+              inline: false,
+            },
+          ],
+          footer: { text: "Lỗi hệ thống" },
+        },
+      ],
+    };
+
+    await reliableMessaging.sendReliableMessage(
+      interaction,
+      errorMessage,
+      operationId
+    );
   } finally {
     database.close();
   }
@@ -172,28 +209,17 @@ async function handleQuantitySelection(interaction, params) {
 
 async function handleCartCheckout(interaction) {
   const userId = interaction.user.id;
-  const cart = userCarts.get(userId) || [];
+  const cart = userCarts.get(userId);
 
-  if (cart.length === 0) {
-    await interaction.reply({
-      content: "❌ Giỏ hàng trống! Vui lòng chọn món trước khi đặt hàng.",
-      ephemeral: true,
-    });
-    return;
-  }
-
-  // Check if still within order deadline
-  const currentTime = moment().format("HH:mm");
-  const orderDeadline = process.env.ORDER_DEADLINE || "23:59";
-
-  if (orderDeadline !== "23:59" && currentTime > orderDeadline) {
+  if (!cart || cart.length === 0) {
     await interaction.reply({
       embeds: [
         {
           color: 0xff0000,
-          title: "⏰ Đã hết hạn đặt món",
-          description: `Hạn đặt món hôm nay là **${orderDeadline}**.\nVui lòng đặt sớm hơn vào ngày mai!`,
-          timestamp: new Date(),
+          title: "🛒 Giỏ hàng trống",
+          description:
+            "Bạn chưa có món ăn nào trong giỏ hàng. Sử dụng `/menu` để xem menu và thêm món.",
+          timestamp: TimeHelper.embedTimestamp(),
         },
       ],
       ephemeral: true,
@@ -201,227 +227,325 @@ async function handleCartCheckout(interaction) {
     return;
   }
 
-  await interaction.deferReply({ flags: 64 }); // 64 = ephemeral flag
+  // STEP 1: IMMEDIATE ACK - User gets instant feedback
+  const totalAmount = cart.reduce((sum, item) => sum + item.subtotal, 0);
+  const operationId = await reliableMessaging.immediateAck(
+    interaction,
+    "order_creation",
+    {
+      totalAmount: formatPrice(totalAmount),
+      itemCount: cart.length.toString(),
+    }
+  );
 
-  const database = new SupabaseDatabase();
-  await database.init();
+  // If duplicate operation, stop here
+  if (!operationId) return;
+
+  // STEP 2: ASYNC PROCESSING - Do the actual work
+  processOrderCreation(interaction, userId, cart, totalAmount, operationId);
+}
+
+async function processOrderCreation(
+  interaction,
+  userId,
+  cart,
+  totalAmount,
+  operationId
+) {
+  const database = await getInitializedDatabase();
 
   try {
-    // Get item details and calculate total
-    const allItems = await database.getMenuItems(false); // Get all items
-    const items = allItems.filter((item) =>
-      cart.some((cartItem) => cartItem.itemId === item.id)
+    console.log(
+      `[ORDER] Processing order creation for user ${userId}, operation: ${operationId}`
     );
 
-    let totalAmount = 0;
-    const orderItems = items
-      .map((item) => {
-        const cartItem = cart.find((i) => i.itemId === item.id);
-        if (!cartItem) return null;
+    // Validate cart items (could be async)
+    const menuItems = await database.getMenuItems(true);
+    const orderItems = [];
 
-        const subtotal = item.price * cartItem.quantity;
-        totalAmount += subtotal;
+    for (const cartItem of cart) {
+      const menuItem = menuItems.find((item) => item.id === cartItem.item_id);
+      if (!menuItem) {
+        throw new Error(`Món ăn ${cartItem.name} không còn tồn tại trong menu`);
+      }
 
-        return {
-          item_id: item.id,
-          name: item.name,
-          price: item.price,
-          quantity: cartItem.quantity,
-          subtotal: subtotal,
-        };
-      })
-      .filter(Boolean);
+      if (!menuItem.available) {
+        throw new Error(`Món ăn ${cartItem.name} hiện tại không có sẵn`);
+      }
 
-    if (orderItems.length === 0) {
-      await interaction.editReply({
-        content: "❌ Không có món nào hợp lệ trong giỏ hàng!",
+      orderItems.push({
+        item_id: cartItem.item_id,
+        name: cartItem.name,
+        price: menuItem.price, // Use current price from DB
+        quantity: cartItem.quantity,
+        subtotal: menuItem.price * cartItem.quantity,
       });
-      return;
     }
 
-    // Create order
-    const today = moment().format("YYYY-MM-DD");
+    // Recalculate total with current prices
+    const validatedTotal = orderItems.reduce(
+      (sum, item) => sum + item.subtotal,
+      0
+    );
+
+    // Create order in database
+    const today = TimeHelper.today();
     const result = await database.createOrder(
       userId,
       interaction.user.username,
       today,
       orderItems,
-      totalAmount
+      validatedTotal
     );
 
-    // Clear cart
+    console.log(`[ORDER] Created order #${result.id} successfully`);
+
+    // Clear cart after successful order creation
     userCarts.delete(userId);
 
-    // Create order confirmation embed
-    const embed = new EmbedBuilder()
-      .setColor(0x00ff00)
-      .setTitle("🎉 Đặt hàng thành công!")
-      .setDescription(`Đơn hàng #${result.id} đã được tạo thành công.`)
-      .addFields(
+    // STEP 3: SEND SUCCESS MESSAGE with retry
+    const successMessage = {
+      embeds: [
+        {
+          color: 0x00ff00,
+          title: "🎉 Đặt hàng thành công!",
+          description: `Đơn hàng #${result.id} đã được tạo thành công.`,
+          fields: [
+            {
+              name: "👤 Khách hàng",
+              value: interaction.user.displayName || interaction.user.username,
+              inline: true,
+            },
+            {
+              name: "📅 Ngày giao",
+              value: TimeHelper.formatDate(today),
+              inline: true,
+            },
+            {
+              name: "💰 Tổng tiền",
+              value: formatPrice(validatedTotal),
+              inline: true,
+            },
+            {
+              name: "🍽️ Chi tiết đơn hàng",
+              value: orderItems
+                .map(
+                  (item) =>
+                    `• ${item.name} x${item.quantity} = ${formatPrice(
+                      item.subtotal
+                    )}`
+                )
+                .join("\n"),
+              inline: false,
+            },
+            { name: "🚚 Trạng thái", value: "⏳ Chờ xử lý", inline: true },
+            {
+              name: "💳 Thanh toán",
+              value: "💸 Thanh toán qua MoMo (Click button để xem QR)",
+              inline: true,
+            },
+          ],
+          footer: { text: `ID đơn hàng: ${result.id}` },
+          timestamp: TimeHelper.embedTimestamp(),
+        },
+      ],
+      components: [
+        {
+          type: 1,
+          components: [
+            {
+              type: 2,
+              style: 3,
+              label: "💳 Thanh toán ngay",
+              custom_id: `payment_${result.id}`,
+            },
+            {
+              type: 2,
+              style: 4,
+              label: "❌ Hủy đơn hàng",
+              custom_id: `cancel_${result.id}`,
+            },
+          ],
+        },
+      ],
+    };
+
+    // PRIVACY FIX: Make success message ephemeral
+    const privateSuccessMessage = {
+      ...successMessage,
+      ephemeral: true, // 🔒 PRIVACY PROTECTION
+    };
+
+    // Send with retry mechanism
+    await reliableMessaging.sendReliableMessage(
+      interaction,
+      privateSuccessMessage,
+      operationId
+    );
+
+    // STEP 4: NOTIFY ADMIN (non-blocking)
+    notifyAdminNewOrder(interaction, result, orderItems, validatedTotal).catch(
+      (error) => {
+        console.error("[ORDER] Admin notification failed:", error.message);
+        // Don't fail the user operation if admin notification fails
+      }
+    );
+  } catch (error) {
+    console.error(`[ORDER] Error processing order creation:`, error);
+
+    // STEP 3b: SEND ERROR MESSAGE with retry
+    const errorMessage = {
+      embeds: [
+        {
+          color: 0xff0000,
+          title: "❌ Lỗi tạo đơn hàng",
+          description:
+            error.message ||
+            "Có lỗi xảy ra khi tạo đơn hàng. Vui lòng thử lại!",
+          fields: [
+            {
+              name: "🔍 Chi tiết lỗi",
+              value: error.message.includes("không còn tồn tại")
+                ? "Một số món ăn trong giỏ hàng đã bị thay đổi. Vui lòng kiểm tra lại menu."
+                : "Lỗi hệ thống. Vui lòng thử lại sau ít phút.",
+              inline: false,
+            },
+            {
+              name: "💡 Hướng dẫn",
+              value:
+                "• Kiểm tra lại menu với `/menu`\n• Thử đặt lại đơn hàng\n• Liên hệ admin nếu vấn đề tiếp tục",
+              inline: false,
+            },
+          ],
+          footer: { text: "Giỏ hàng của bạn vẫn được giữ nguyên" },
+          timestamp: TimeHelper.embedTimestamp(),
+        },
+      ],
+      ephemeral: true, // 🔒 PRIVACY PROTECTION
+    };
+
+    await reliableMessaging.sendReliableMessage(
+      interaction,
+      errorMessage,
+      operationId
+    );
+  } finally {
+    database.close();
+  }
+}
+
+async function notifyAdminNewOrder(
+  interaction,
+  order,
+  orderItems,
+  totalAmount
+) {
+  const orderChannelId = process.env.ORDER_CHANNEL_ID;
+  if (!orderChannelId) return;
+
+  try {
+    const orderChannel = interaction.client.channels.cache.get(orderChannelId);
+    if (!orderChannel) {
+      console.warn(`Order channel ${orderChannelId} not found`);
+      return;
+    }
+
+    const adminEmbed = {
+      color: 0xff9900,
+      title: "🔔 Đơn hàng mới",
+      fields: [
         {
           name: "👤 Khách hàng",
           value: interaction.user.displayName || interaction.user.username,
           inline: true,
         },
         {
-          name: "📅 Ngày giao",
-          value: moment(today).format("DD/MM/YYYY"),
+          name: "🆔 ID đơn hàng",
+          value: order.id.toString(),
           inline: true,
         },
-        { name: "💰 Tổng tiền", value: formatPrice(totalAmount), inline: true },
         {
-          name: "🍽️ Chi tiết đơn hàng",
+          name: "💰 Tổng tiền",
+          value: formatPrice(totalAmount),
+          inline: true,
+        },
+        {
+          name: "🍽️ Món ăn",
           value: orderItems
-            .map(
-              (item) =>
-                `• ${item.name} x${item.quantity} = ${formatPrice(
-                  item.subtotal
-                )}`
-            )
+            .map((item) => `• ${item.name} x${item.quantity}`)
             .join("\n"),
           inline: false,
         },
-        { name: "🚚 Trạng thái", value: "⏳ Chờ xử lý", inline: true },
+      ],
+      timestamp: TimeHelper.embedTimestamp(),
+    };
+
+    const adminButtons = {
+      type: 1,
+      components: [
         {
-          name: "💳 Thanh toán",
-          value: "💸 Thanh toán qua MoMo (Click button để xem QR)",
-          inline: true,
-        }
-      )
-      .setFooter({ text: `ID đơn hàng: ${result.id}` })
-      .setTimestamp();
+          type: 2,
+          style: 3,
+          label: "💳 Đã thanh toán",
+          custom_id: `admin_payment_${order.id}_paid`,
+        },
+      ],
+    };
 
-    // Chỉ 2 buttons: Thanh toán và Hủy đơn hàng
-    const buttons = new ActionRowBuilder().addComponents(
-      new ButtonBuilder()
-        .setCustomId(`payment_${result.id}`)
-        .setLabel("💳 Thanh toán ngay")
-        .setStyle(ButtonStyle.Success),
-      new ButtonBuilder()
-        .setCustomId(`cancel_${result.id}`)
-        .setLabel("❌ Hủy đơn hàng")
-        .setStyle(ButtonStyle.Danger)
-    );
-
-    await interaction.editReply({
-      embeds: [embed],
-      components: [buttons],
+    await orderChannel.send({
+      content: process.env.ADMIN_USER_ID
+        ? `<@${process.env.ADMIN_USER_ID}> **Đơn hàng mới cần thanh toán!**`
+        : "**Đơn hàng mới cần thanh toán!**",
+      embeds: [adminEmbed],
+      components: [adminButtons],
     });
 
-    // Send notification to order channel if configured
-    const orderChannelId = process.env.ORDER_CHANNEL_ID;
-    if (orderChannelId) {
+    console.log(`[ORDER] Admin notified for order #${order.id}`);
+  } catch (channelError) {
+    console.error("Error sending to order channel:", channelError.message);
+
+    // Fallback: Send DM to admin
+    const adminUserId = process.env.ADMIN_USER_ID;
+    if (adminUserId) {
       try {
-        const orderChannel =
-          interaction.client.channels.cache.get(orderChannelId);
-        if (orderChannel) {
-          const adminEmbed = new EmbedBuilder()
-            .setColor(0xff9900)
-            .setTitle("🔔 Đơn hàng mới")
-            .addFields(
-              {
-                name: "👤 Khách hàng",
-                value:
-                  interaction.user.displayName || interaction.user.username,
-                inline: true,
-              },
-              {
-                name: "🆔 ID đơn hàng",
-                value: result.id.toString(),
-                inline: true,
-              },
-              {
-                name: "💰 Tổng tiền",
-                value: formatPrice(totalAmount),
-                inline: true,
-              },
-              {
-                name: "🍽️ Món ăn",
-                value: orderItems
-                  .map((item) => `• ${item.name} x${item.quantity}`)
-                  .join("\n"),
-                inline: false,
-              }
-            )
-            .setTimestamp();
+        const adminUser = await interaction.client.users.fetch(adminUserId);
+        const dmEmbed = {
+          color: 0xff9900,
+          title: "🔔 Đơn hàng mới (DM)",
+          description: "Không thể gửi tới order channel, gửi DM thay thế",
+          fields: [
+            {
+              name: "👤 Khách hàng",
+              value: interaction.user.displayName || interaction.user.username,
+              inline: true,
+            },
+            {
+              name: "🆔 ID đơn hàng",
+              value: order.id.toString(),
+              inline: true,
+            },
+            {
+              name: "💰 Tổng tiền",
+              value: formatPrice(totalAmount),
+              inline: true,
+            },
+            {
+              name: "🍽️ Món ăn",
+              value: orderItems
+                .map((item) => `• ${item.name} x${item.quantity}`)
+                .join("\n"),
+              inline: false,
+            },
+          ],
+          timestamp: TimeHelper.embedTimestamp(),
+        };
 
-          // Admin action buttons - chỉ button thanh toán
-          const adminButtons = new ActionRowBuilder().addComponents(
-            new ButtonBuilder()
-              .setCustomId(`admin_payment_${result.id}_paid`)
-              .setLabel("💳 Đã thanh toán")
-              .setStyle(ButtonStyle.Success)
-          );
-
-          await orderChannel.send({
-            content: process.env.ADMIN_USER_ID
-              ? `<@${process.env.ADMIN_USER_ID}> **Đơn hàng mới cần thanh toán!**`
-              : "**Đơn hàng mới cần thanh toán!**",
-            embeds: [adminEmbed],
-            components: [adminButtons],
-          });
-        } else {
-          console.warn(`Order channel ${orderChannelId} not found`);
-        }
-      } catch (channelError) {
-        console.error("Error sending to order channel:", channelError);
-        console.warn(
-          "Bot may not have permission to send messages to the order channel"
-        );
-
-        // Alternative: Send DM to admin if channel fails
-        const adminUserId = process.env.ADMIN_USER_ID;
-        if (adminUserId) {
-          try {
-            const adminUser = await interaction.client.users.fetch(adminUserId);
-            const dmEmbed = new EmbedBuilder()
-              .setColor(0xff9900)
-              .setTitle("🔔 Đơn hàng mới (DM)")
-              .setDescription(
-                "Không thể gửi tới order channel, gửi DM thay thế"
-              )
-              .addFields(
-                {
-                  name: "👤 Khách hàng",
-                  value:
-                    interaction.user.displayName || interaction.user.username,
-                  inline: true,
-                },
-                {
-                  name: "🆔 ID đơn hàng",
-                  value: result.id.toString(),
-                  inline: true,
-                },
-                {
-                  name: "💰 Tổng tiền",
-                  value: formatPrice(totalAmount),
-                  inline: true,
-                },
-                {
-                  name: "🍽️ Món ăn",
-                  value: orderItems
-                    .map((item) => `• ${item.name} x${item.quantity}`)
-                    .join("\n"),
-                  inline: false,
-                }
-              )
-              .setTimestamp();
-
-            await adminUser.send({ embeds: [dmEmbed] });
-            console.log("Sent order notification via DM to admin");
-          } catch (dmError) {
-            console.error("Failed to send DM to admin:", dmError);
-          }
-        }
+        await adminUser.send({ embeds: [dmEmbed] });
+        console.log("Sent order notification via DM to admin");
+      } catch (dmError) {
+        console.error("Failed to send DM to admin:", dmError.message);
       }
     }
-  } catch (error) {
-    console.error("Error processing checkout:", error);
-    await interaction.editReply({
-      content: "❌ Có lỗi xảy ra khi xử lý đơn hàng. Vui lòng thử lại!",
-    });
-  } finally {
-    database.close();
   }
 }
 
@@ -435,7 +559,7 @@ async function handleCartClear(interaction) {
         color: 0xff0000,
         title: "🗑️ Đã xóa giỏ hàng",
         description: "Tất cả món ăn đã được xóa khỏi giỏ hàng.",
-        timestamp: new Date(),
+        timestamp: TimeHelper.embedTimestamp(),
       },
     ],
     ephemeral: true,
@@ -452,7 +576,6 @@ function formatPrice(price) {
 
 module.exports = {
   handleMenuItemSelection,
-  handleQuantitySelection,
   handleCartCheckout,
   handleCartClear,
 };

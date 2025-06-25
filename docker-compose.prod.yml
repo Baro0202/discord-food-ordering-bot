@@ -1,0 +1,159 @@
+version: "3.8"
+
+services:
+  # Kafka Infrastructure (optional, comment out for Kafka disabled testing)
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.4.0
+    container_name: zookeeper
+    restart: unless-stopped
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+    volumes:
+      - zookeeper-data:/var/lib/zookeeper/data
+      - zookeeper-logs:/var/lib/zookeeper/log
+    networks:
+      - bot-network
+    profiles:
+      - kafka
+
+  kafka:
+    image: confluentinc/cp-kafka:7.4.0
+    container_name: kafka
+    restart: unless-stopped
+    depends_on:
+      - zookeeper
+    ports:
+      - "9092:9092"
+      - "9094:9094"
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT,OUTSIDE:PLAINTEXT
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:29092,PLAINTEXT_HOST://localhost:9092,OUTSIDE://kafka:9094
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: true
+      KAFKA_NUM_PARTITIONS: 3
+      KAFKA_DEFAULT_REPLICATION_FACTOR: 1
+    volumes:
+      - kafka-data:/var/lib/kafka/data
+    networks:
+      - bot-network
+    profiles:
+      - kafka
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "kafka-broker-api-versions --bootstrap-server localhost:9092",
+        ]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+
+  # Kafka UI for monitoring (optional)
+  kafka-ui:
+    image: provectuslabs/kafka-ui:latest
+    container_name: kafka-ui
+    restart: unless-stopped
+    depends_on:
+      - kafka
+    ports:
+      - "8080:8080"
+    environment:
+      KAFKA_CLUSTERS_0_NAME: local
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:29092
+      KAFKA_CLUSTERS_0_ZOOKEEPER: zookeeper:2181
+    networks:
+      - bot-network
+    profiles:
+      - kafka
+
+  # Discord Bot - Production Configuration
+  discord-bot:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: food-ordering-bot-prod
+    environment:
+      - NODE_ENV=production
+      - TZ=Asia/Ho_Chi_Minh
+      - PORT=3000
+
+      # Discord Configuration
+      - DISCORD_TOKEN=${DISCORD_TOKEN:-MTM3NzQ3OTAwNDIwNjE0MTYxMQ.G7f9D-.EY2Nuy3jAX33s0YR8MbwfxzisycCJuwBu6zE8g}
+      - DISCORD_CLIENT_ID=${DISCORD_CLIENT_ID:-1377479004206141611}
+      - GUILD_ID=${GUILD_ID:-1329647866888589434}
+
+      # Supabase Configuration
+      - SUPABASE_URL=${SUPABASE_URL:-https://zaqwxhjojbfzghqezdfc.supabase.co}
+      - SUPABASE_ANON_KEY=${SUPABASE_ANON_KEY:-eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InphcXd4aGpvamJmemdocWV6ZGZjIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NDg0OTE5MzUsImV4cCI6MjA2NDA2NzkzNX0.J8UwTZIBhERgzCZsVz5PEDV_woSB2B3Nqjk_OXc0sRc}
+
+      # Admin Configuration
+      - ADMIN_USER_ID=${ADMIN_USER_ID:-1329624897588170856}
+      - ORDER_CHANNEL_ID=${ORDER_CHANNEL_ID:-1377505414140399686}
+      - REMINDER_CHANNEL_ID=${REMINDER_CHANNEL_ID:-1344483808602361877}
+      - ORDER_DEADLINE=${ORDER_DEADLINE:-21:45}
+      - ORDER_START_TIME=${ORDER_START_TIME:-08:00}
+
+      # MoMo Configuration
+      - MOMO_PHONE=${MOMO_PHONE:-0123456789}
+
+      # Kafka Configuration (DISABLED for reliable messaging test)
+      - KAFKA_ENABLED=false
+      - KAFKA_CLIENT_ID=${KAFKA_CLIENT_ID:-discord-food-bot}
+      - KAFKA_BROKERS=${KAFKA_BROKERS:-kafka:29092}
+      - KAFKA_CONNECTION_TIMEOUT=${KAFKA_CONNECTION_TIMEOUT:-3000}
+      - KAFKA_REQUEST_TIMEOUT=${KAFKA_REQUEST_TIMEOUT:-30000}
+      - KAFKA_RETRIES=${KAFKA_RETRIES:-5}
+
+      # Kafka Topics
+      - KAFKA_TOPIC_ORDERS=${KAFKA_TOPIC_ORDERS:-food-orders}
+      - KAFKA_TOPIC_PAYMENTS=${KAFKA_TOPIC_PAYMENTS:-payments}
+      - KAFKA_TOPIC_USERS=${KAFKA_TOPIC_USERS:-users}
+      - KAFKA_TOPIC_NOTIFICATIONS=${KAFKA_TOPIC_NOTIFICATIONS:-notifications}
+
+    ports:
+      - "8386:3000"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    networks:
+      - bot-network
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # Monitoring (optional)
+  watchtower:
+    image: containrrr/watchtower
+    container_name: watchtower
+    restart: unless-stopped
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    environment:
+      - WATCHTOWER_CLEANUP=true
+      - WATCHTOWER_POLL_INTERVAL=3600
+    networks:
+      - bot-network
+
+networks:
+  bot-network:
+    driver: bridge
+
+volumes:
+  logs:
+  backups:
+  kafka-data:
+  zookeeper-data:
+  zookeeper-logs:

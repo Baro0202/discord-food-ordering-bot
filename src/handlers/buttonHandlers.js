@@ -3,9 +3,11 @@ const {
   ActionRowBuilder,
   ButtonBuilder,
   ButtonStyle,
+  StringSelectMenuBuilder,
 } = require("discord.js");
-const SupabaseDatabase = require("../database/supabase");
-const moment = require("moment");
+const { getInitializedDatabase } = require("../utils/databaseHelper");
+const TimeHelper = require("../utils/timeHelper");
+const reliableMessaging = require("../utils/reliableMessaging");
 
 // Temporary storage for user carts (in production, use Redis or database)
 const userCarts = new Map();
@@ -42,8 +44,7 @@ async function handleConfirmButton(interaction, params) {
     return;
   }
 
-  const database = new SupabaseDatabase();
-  await database.init();
+  const database = await getInitializedDatabase();
 
   try {
     const order = await database.getOrder(parseInt(orderId));
@@ -81,12 +82,12 @@ async function handleConfirmButton(interaction, params) {
         },
         {
           name: "📅 Ngày giao",
-          value: moment(order.menu_date).format("DD/MM/YYYY"),
+          value: TimeHelper.formatDate(order.menu_date),
           inline: true,
         },
         { name: "🚚 Trạng thái", value: "✅ Đã xác nhận", inline: true }
       )
-      .setTimestamp();
+      .setTimestamp(TimeHelper.embedTimestamp());
 
     await interaction.reply({
       embeds: [embed],
@@ -126,8 +127,7 @@ async function handleCancelButton(interaction, params) {
     return;
   }
 
-  const database = new SupabaseDatabase();
-  await database.init();
+  const database = await getInitializedDatabase();
 
   try {
     const order = await database.getOrder(parseInt(orderId));
@@ -142,6 +142,15 @@ async function handleCancelButton(interaction, params) {
     if (order.user_id !== interaction.user.id) {
       await interaction.editReply({
         content: "❌ Bạn không có quyền thực hiện hành động này!",
+      });
+      return;
+    }
+
+    // Check if it's past order deadline
+    const orderDeadline = process.env.ORDER_DEADLINE || "09:45";
+    if (orderDeadline !== "23:59" && TimeHelper.isPastDeadline(orderDeadline)) {
+      await interaction.editReply({
+        content: `❌ Không thể hủy đơn hàng sau ${orderDeadline}!`,
       });
       return;
     }
@@ -167,12 +176,12 @@ async function handleCancelButton(interaction, params) {
         },
         {
           name: "📅 Ngày",
-          value: moment(order.menu_date).format("DD/MM/YYYY"),
+          value: TimeHelper.formatDate(order.menu_date),
           inline: true,
         },
         { name: "🚚 Trạng thái", value: "❌ Đã hủy", inline: true }
       )
-      .setTimestamp();
+      .setTimestamp(TimeHelper.embedTimestamp());
 
     await interaction.editReply({
       embeds: [embed],
@@ -216,8 +225,7 @@ async function handlePaymentButton(interaction, params) {
     return;
   }
 
-  const database = new SupabaseDatabase();
-  await database.init();
+  const database = await getInitializedDatabase();
 
   try {
     const order = await database.getOrder(parseInt(orderId));
@@ -254,7 +262,7 @@ async function handlePaymentButton(interaction, params) {
         },
         {
           name: "📅 Ngày giao",
-          value: moment(order.menu_date).format("DD/MM/YYYY"),
+          value: TimeHelper.formatDate(order.menu_date),
           inline: true,
         },
         {
@@ -275,7 +283,7 @@ async function handlePaymentButton(interaction, params) {
         "https://salt.tkbcdn.com/ts/ds/7b/6d/a9/efae12b2a7e9bf659ca5898fd74bfb7b.jpg"
       ) // QR code từ .env
       .setFooter({ text: `ID đơn hàng: ${orderId} | Cảm ơn bạn đã đặt hàng!` })
-      .setTimestamp();
+      .setTimestamp(TimeHelper.embedTimestamp());
 
     await interaction.editReply({
       embeds: [embed],
@@ -308,7 +316,7 @@ async function showCart(interaction) {
           title: "🛒 Giỏ hàng trống",
           description:
             "Bạn chưa thêm món nào vào giỏ hàng.\nSử dụng menu để chọn món!",
-          timestamp: new Date(),
+          timestamp: TimeHelper.embedTimestamp(),
         },
       ],
       ephemeral: true,
@@ -316,8 +324,7 @@ async function showCart(interaction) {
     return;
   }
 
-  const database = new SupabaseDatabase();
-  await database.init();
+  const database = await getInitializedDatabase();
 
   try {
     // Get item details
@@ -359,7 +366,7 @@ async function showCart(interaction) {
         { name: "💰 Tổng cộng", value: formatPrice(totalAmount), inline: true },
         { name: "🍽️ Số món", value: cart.length.toString(), inline: true }
       )
-      .setTimestamp();
+      .setTimestamp(TimeHelper.embedTimestamp());
 
     const buttons = new ActionRowBuilder().addComponents(
       new ButtonBuilder()
@@ -393,8 +400,7 @@ async function showCart(interaction) {
 }
 
 async function showOrderHistory(interaction) {
-  const database = new SupabaseDatabase();
-  await database.init();
+  const database = await getInitializedDatabase();
 
   try {
     const orders = await database.getUserOrders(interaction.user.id, 5);
@@ -407,7 +413,7 @@ async function showOrderHistory(interaction) {
             title: "📋 Chưa có đơn hàng",
             description:
               "Bạn chưa có đơn hàng nào.\nSử dụng `/menu` để đặt món đầu tiên!",
-            timestamp: new Date(),
+            timestamp: TimeHelper.embedTimestamp(),
           },
         ],
         ephemeral: true,
@@ -423,17 +429,17 @@ async function showOrderHistory(interaction) {
           interaction.user.displayName || interaction.user.username
         }`
       )
-      .setTimestamp();
+      .setTimestamp(TimeHelper.embedTimestamp());
 
     orders.forEach((order) => {
       const statusEmoji = getStatusEmoji(order.status);
       embed.addFields({
-        name: `${statusEmoji} Đơn #${order.id} - ${moment(
+        name: `${statusEmoji} Đơn #${order.id} - ${TimeHelper.formatDate(
           order.menu_date
-        ).format("DD/MM/YYYY")}`,
+        )}`,
         value: `💰 ${formatPrice(order.total_amount)} | 🚚 ${
           order.status
-        }\n📅 ${moment(order.created_at).format("DD/MM/YYYY HH:mm")}`,
+        }\n📅 ${TimeHelper.formatDateTime(order.created_at)}`,
         inline: false,
       });
     });
@@ -477,14 +483,14 @@ async function showHelp(interaction) {
           `Chào mừng bạn đến với hệ thống đặt cơm!\n\n` +
           `**🕘 Thời gian đặt món:**\n` +
           `• Hạn đặt: **${
-            process.env.ORDER_DEADLINE || "23:59"
-          }** mỗi ngày\n• Giao hàng: **12:00 PM**\n• Nhắc nhở tự động: **9:00 AM** và **9:45 AM**`,
+            process.env.ORDER_DEADLINE || "09:45"
+          }** mỗi ngày\n• Giao hàng: **12:00 PM**\n• Nhắc nhở tự động: **8:00 AM** và **9:30 AM**`,
         inline: false,
       },
       {
         name: "💳 Thanh toán",
         value:
-          "• Hiện tại: Thanh toán khi nhận hàng (COD)\n• Sắp tới: Tích hợp thanh toán online",
+          "• Hiện tại: Thanh toán bằng MoMo)\n• Sắp tới: Tích hợp thanh toán online",
         inline: false,
       },
       {
@@ -495,7 +501,7 @@ async function showHelp(interaction) {
       }
     )
     .setFooter({ text: "Cần hỗ trợ? Liên hệ admin của server!" })
-    .setTimestamp();
+    .setTimestamp(TimeHelper.embedTimestamp());
 
   await interaction.reply({
     embeds: [embed],
@@ -527,8 +533,7 @@ async function handleAdminUpdateButton(interaction, params) {
     return;
   }
 
-  const database = new SupabaseDatabase();
-  await database.init();
+  const database = await getInitializedDatabase();
 
   try {
     const order = await database.getOrder(orderId);
@@ -565,7 +570,7 @@ async function handleAdminUpdateButton(interaction, params) {
         },
         { name: "👨‍💼 Admin", value: interaction.user.displayName, inline: true }
       )
-      .setTimestamp();
+      .setTimestamp(TimeHelper.embedTimestamp());
 
     await interaction.reply({
       embeds: [embed],
@@ -594,25 +599,41 @@ async function handleAdminUpdateButton(interaction, params) {
       const user = await interaction.client.users.fetch(order.user_id);
       const customerEmbed = new EmbedBuilder()
         .setColor(0x00ff00)
-        .setTitle("💳 Thanh toán đã được xác nhận!")
+        .setTitle("✅ Thanh toán đã được xác nhận!")
         .setDescription(
-          `Đơn hàng #${orderId} của bạn đã được thanh toán thành công.`
+          `Chào **${order.username}**!\n\nĐơn hàng #${orderId} của bạn đã được thanh toán thành công.`
         )
         .addFields(
           {
-            name: "💰 Số tiền",
+            name: "🍽️ Chi tiết đơn hàng",
+            value: order.items
+              .map((item) => `• ${item.name} x${item.quantity}`)
+              .join("\n"),
+            inline: false,
+          },
+          {
+            name: "💰 Số tiền đã thanh toán",
             value: formatPrice(order.total_amount),
             inline: true,
           },
           {
-            name: "📅 Ngày",
-            value: moment(order.menu_date).format("DD/MM/YYYY"),
+            name: "📅 Ngày giao hàng",
+            value: TimeHelper.formatDate(order.menu_date),
+            inline: true,
+          },
+          {
+            name: "🔄 Trạng thái hiện tại",
+            value: "✅ Đã thanh toán - Chuẩn bị giao hàng",
             inline: true,
           }
         )
-        .setTimestamp();
+        .setFooter({ text: "Cảm ơn bạn đã sử dụng dịch vụ đặt cơm!" })
+        .setTimestamp(TimeHelper.embedTimestamp());
 
       await user.send({ embeds: [customerEmbed] });
+      console.log(
+        `[INFO] Payment confirmation sent to user ${order.user_id} for order #${orderId}`
+      );
     } catch (error) {
       console.log("Could not send DM to customer:", error.message);
     }
@@ -630,27 +651,51 @@ async function handleAdminUpdateButton(interaction, params) {
 async function handleQuickMenu(interaction, params) {
   // Simulate /menu command execution
   const SupabaseDatabase = require("../database/supabase");
-  const moment = require("moment");
+  const {
+    EmbedBuilder,
+    ActionRowBuilder,
+    StringSelectMenuBuilder,
+    ButtonBuilder,
+    ButtonStyle,
+  } = require("discord.js");
+  const TimeHelper = require("../utils/timeHelper");
 
   await interaction.deferReply({ flags: 64 }); // 64 = ephemeral flag
 
-  const database = new SupabaseDatabase();
-  await database.init();
+  const database = await getInitializedDatabase();
 
   try {
-    const today = moment().format("YYYY-MM-DD");
-    const orderDeadline = process.env.ORDER_DEADLINE || "23:59";
+    const today = TimeHelper.today();
+    const orderDeadline = process.env.ORDER_DEADLINE || "09:45";
+    const orderStartTime = process.env.ORDER_START_TIME || "08:00";
+
+    // Check if it's before order start time
+    if (
+      orderStartTime !== "00:00" &&
+      TimeHelper.isBeforeStartTime(orderStartTime)
+    ) {
+      await interaction.editReply({
+        embeds: [
+          {
+            color: 0xff9900,
+            title: "⏰ Chưa đến giờ đặt món",
+            description: `Thời gian đặt món: **${orderStartTime} - ${orderDeadline}**\nVui lòng quay lại sau ${orderStartTime}!`,
+            timestamp: TimeHelper.embedTimestamp(),
+          },
+        ],
+      });
+      return;
+    }
 
     // Check if it's past order deadline
-    const currentTime = moment().format("HH:mm");
-    if (orderDeadline !== "23:59" && currentTime > orderDeadline) {
+    if (orderDeadline !== "23:59" && TimeHelper.isPastDeadline(orderDeadline)) {
       await interaction.editReply({
         embeds: [
           {
             color: 0xff0000,
             title: "⏰ Đã hết hạn đặt món",
-            description: `Hạn đặt món hôm nay là **${orderDeadline}**.\nVui lòng đặt sớm hơn vào ngày mai!`,
-            timestamp: new Date(),
+            description: `Thời gian đặt món: **${orderStartTime} - ${orderDeadline}**\nVui lòng đặt sớm hơn vào ngày mai!`,
+            timestamp: TimeHelper.embedTimestamp(),
           },
         ],
       });
@@ -668,40 +713,402 @@ async function handleQuickMenu(interaction, params) {
             title: "📋 Chưa có menu hôm nay",
             description:
               "Admin chưa cập nhật menu cho hôm nay.\nVui lòng thử lại sau!",
-            timestamp: new Date(),
+            timestamp: TimeHelper.embedTimestamp(),
           },
         ],
       });
       return;
     }
 
-    // Quick redirect to menu command
+    // Get menu items
+    let menuItems = [];
+    if (dailyMenu && dailyMenu.menu_items && dailyMenu.menu_items.length > 0) {
+      // Get all available menu items
+      const allItems = await database.getMenuItems(true);
+
+      // Filter items that are in today's menu
+      menuItems = allItems.filter((item) =>
+        dailyMenu.menu_items.includes(item.id)
+      );
+    } else {
+      // Fallback: show all available items if no daily menu is set
+      menuItems = await database.getMenuItems(true);
+    }
+
+    if (menuItems.length === 0) {
+      await interaction.editReply({
+        embeds: [
+          {
+            color: 0xff9900,
+            title: "🍽️ Không có món nào",
+            description: "Hiện tại không có món ăn nào khả dụng.",
+            timestamp: TimeHelper.embedTimestamp(),
+          },
+        ],
+      });
+      return;
+    }
+
+    // Group items by category
+    const categories = {};
+    menuItems.forEach((item) => {
+      if (!categories[item.category]) {
+        categories[item.category] = [];
+      }
+      categories[item.category].push(item);
+    });
+
+    // Create embed
+    const embed = new EmbedBuilder()
+      .setColor(0x00ff00)
+      .setTitle("🍽️ Menu Hôm Nay")
+      .setDescription(
+        `📅 **Ngày:** ${TimeHelper.formatDate(
+          today
+        )}\n⏰ **Thời gian đặt:** ${orderStartTime} - ${orderDeadline}\n🚚 **Giao hàng:** ${
+          dailyMenu.delivery_time
+        }`
+      )
+      .setTimestamp(TimeHelper.embedTimestamp());
+
+    if (dailyMenu.special_note) {
+      embed.addFields({
+        name: "📝 Ghi chú đặc biệt",
+        value: dailyMenu.special_note,
+        inline: false,
+      });
+    }
+
+    // Add menu items by category
+    for (const [categoryName, items] of Object.entries(categories)) {
+      const categoryEmoji = getCategoryEmoji(categoryName);
+      const itemsList = items
+        .map(
+          (item) =>
+            `**${item.name}** - ${formatPrice(item.price)}\n${
+              item.description || "Không có mô tả"
+            }`
+        )
+        .join("\n\n");
+
+      embed.addFields({
+        name: `${categoryEmoji} ${capitalizeFirst(categoryName)}`,
+        value: itemsList,
+        inline: false,
+      });
+    }
+
+    // Create select menu for ordering
+    const selectMenu = new StringSelectMenuBuilder()
+      .setCustomId("menuitems_order")
+      .setPlaceholder("Chọn món để đặt...")
+      .addOptions(
+        menuItems.map((item) => ({
+          label: `${item.name} - ${formatPrice(item.price)}`,
+          description: item.description
+            ? item.description.substring(0, 100)
+            : "Không có mô tả",
+          value: item.id.toString(),
+        }))
+      );
+
+    const row1 = new ActionRowBuilder().addComponents(selectMenu);
+
+    // Add buttons
+    const buttons = new ActionRowBuilder().addComponents(
+      new ButtonBuilder()
+        .setCustomId("order_cart")
+        .setLabel("🛒 Xem giỏ hàng")
+        .setStyle(ButtonStyle.Primary),
+      new ButtonBuilder()
+        .setCustomId("order_history")
+        .setLabel("📋 Lịch sử đặt hàng")
+        .setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder()
+        .setCustomId("order_help")
+        .setLabel("❓ Trợ giúp")
+        .setStyle(ButtonStyle.Secondary)
+    );
+
     await interaction.editReply({
-      embeds: [
-        {
-          color: 0x00ff00,
-          title: "🍽️ Chuyển đến menu...",
-          description: "Sử dụng lệnh `/menu` để xem menu chi tiết và đặt cơm!",
-          timestamp: new Date(),
-        },
-      ],
+      embeds: [embed],
+      components: [row1, buttons],
     });
   } catch (error) {
     console.error("Error in quick menu:", error);
     await interaction.editReply({
-      content: "❌ Có lỗi xảy ra! Vui lòng sử dụng lệnh `/menu` thay thế.",
+      content: "❌ Có lỗi xảy ra! Vui lòng thử lại sau.",
     });
   } finally {
     database.close();
   }
 }
 
+async function handleConfirmPaymentButton(interaction, params) {
+  const orderId = params[0];
+  const userId = interaction.user.id;
+
+  // STEP 1: Immediate ACK for payment confirmation
+  const operationId = await reliableMessaging.immediateAck(
+    interaction,
+    "payment_confirmation",
+    {
+      orderId: orderId,
+    }
+  );
+
+  if (!operationId) return; // Duplicate operation handled
+
+  // STEP 2: Async processing
+  processPaymentConfirmation(interaction, orderId, operationId);
+}
+
+async function processPaymentConfirmation(interaction, orderId, operationId) {
+  const database = await getInitializedDatabase();
+
+  try {
+    const order = await database.getOrder(parseInt(orderId));
+
+    if (!order) {
+      const errorMessage = {
+        embeds: [
+          {
+            color: 0xff0000,
+            title: "❌ Không tìm thấy đơn hàng!",
+            description: "Đơn hàng này có thể đã bị xóa hoặc không tồn tại.",
+            footer: { text: "Kiểm tra lại ID đơn hàng" },
+          },
+        ],
+      };
+      await reliableMessaging.sendReliableMessage(
+        interaction,
+        errorMessage,
+        operationId
+      );
+      return;
+    }
+
+    if (order.user_id !== interaction.user.id) {
+      const errorMessage = {
+        embeds: [
+          {
+            color: 0xff0000,
+            title: "❌ Không có quyền truy cập!",
+            description: "Bạn không có quyền thực hiện hành động này.",
+            footer: { text: "Chỉ chủ đơn hàng mới có thể xác nhận" },
+          },
+        ],
+      };
+      await reliableMessaging.sendReliableMessage(
+        interaction,
+        errorMessage,
+        operationId
+      );
+      return;
+    }
+
+    if (order.payment_status === "paid") {
+      const alreadyPaidMessage = {
+        embeds: [
+          {
+            color: 0x00ff00,
+            title: "✅ Đã thanh toán rồi!",
+            description: "Đơn hàng này đã được thanh toán và xác nhận.",
+            footer: { text: `Đơn hàng #${orderId}` },
+          },
+        ],
+      };
+      await reliableMessaging.sendReliableMessage(
+        interaction,
+        alreadyPaidMessage,
+        operationId
+      );
+      return;
+    }
+
+    // Update payment status to pending confirmation
+    await database.updateOrderPaymentStatus(
+      parseInt(orderId),
+      "pending_confirmation"
+    );
+
+    // STEP 3: Send success message to user with retry
+    const userSuccessMessage = {
+      embeds: [
+        {
+          color: 0x00ff00,
+          title: "✅ Đã gửi xác nhận thanh toán!",
+          description: `Cảm ơn bạn đã xác nhận chuyển khoản cho đơn hàng #${orderId}`,
+          fields: [
+            {
+              name: "💰 Số tiền",
+              value: formatPrice(order.total_amount),
+              inline: true,
+            },
+            {
+              name: "📅 Thời gian",
+              value: TimeHelper.formatDateTime(new Date()),
+              inline: true,
+            },
+            {
+              name: "🔄 Trạng thái",
+              value: "⏳ Chờ admin xác nhận",
+              inline: true,
+            },
+          ],
+          footer: {
+            text: "Admin sẽ kiểm tra và xác nhận thanh toán của bạn trong thời gian sớm nhất. Bạn sẽ được thông báo khi thanh toán được xác nhận.",
+          },
+        },
+      ],
+      ephemeral: true, // 🔒 PRIVACY PROTECTION
+    };
+
+    await reliableMessaging.sendReliableMessage(
+      interaction,
+      userSuccessMessage,
+      operationId
+    );
+
+    // STEP 4: Send notification to admin (non-blocking)
+    notifyAdminPaymentConfirmation(interaction, order, orderId).catch(
+      (error) => {
+        console.error("[PAYMENT] Admin notification failed:", error.message);
+      }
+    );
+  } catch (error) {
+    console.error("Error confirming payment:", error);
+
+    const errorMessage = {
+      embeds: [
+        {
+          color: 0xff0000,
+          title: "❌ Lỗi xác nhận thanh toán",
+          description: "Có lỗi xảy ra khi xử lý xác nhận thanh toán!",
+          fields: [
+            {
+              name: "💡 Hướng dẫn",
+              value:
+                "• Thử lại sau ít phút\n• Kiểm tra kết nối mạng\n• Liên hệ admin nếu vấn đề tiếp tục",
+              inline: false,
+            },
+          ],
+          footer: { text: "Lỗi hệ thống" },
+        },
+      ],
+      ephemeral: true, // 🔒 PRIVACY PROTECTION
+    };
+
+    await reliableMessaging.sendReliableMessage(
+      interaction,
+      errorMessage,
+      operationId
+    );
+  } finally {
+    database.close();
+  }
+}
+
+async function notifyAdminPaymentConfirmation(interaction, order, orderId) {
+  const orderChannelId = process.env.ORDER_CHANNEL_ID;
+  if (!orderChannelId) return;
+
+  try {
+    const orderChannel = interaction.client.channels.cache.get(orderChannelId);
+    if (!orderChannel) return;
+
+    const adminEmbed = {
+      color: 0xff9900,
+      title: "💳 Xác nhận chuyển khoản từ khách hàng",
+      description: `Khách hàng đã xác nhận chuyển khoản cho đơn hàng #${orderId}`,
+      fields: [
+        {
+          name: "👤 Khách hàng",
+          value: interaction.user.displayName || interaction.user.username,
+          inline: true,
+        },
+        { name: "🆔 User ID", value: interaction.user.id, inline: true },
+        {
+          name: "💰 Số tiền",
+          value: formatPrice(order.total_amount),
+          inline: true,
+        },
+        {
+          name: "📅 Thời gian xác nhận",
+          value: TimeHelper.formatDateTime(new Date()),
+          inline: true,
+        },
+        {
+          name: "🍽️ Chi tiết đơn hàng",
+          value: order.items
+            .map((item) => `• ${item.name} x${item.quantity}`)
+            .join("\n"),
+          inline: false,
+        },
+        {
+          name: "💸 Thông tin chuyển khoản",
+          value: `**Nội dung cần kiểm tra:** Order #${orderId}\n**Số tiền:** ${formatPrice(
+            order.total_amount
+          )}`,
+          inline: false,
+        },
+      ],
+      timestamp: TimeHelper.embedTimestamp(),
+    };
+
+    const adminButtons = {
+      type: 1,
+      components: [
+        {
+          type: 2,
+          style: 3,
+          label: "✅ Xác nhận đã nhận tiền",
+          custom_id: `admin_payment_${orderId}_paid`,
+        },
+        {
+          type: 2,
+          style: 4,
+          label: "❌ Chưa nhận được tiền",
+          custom_id: `admin_payment_${orderId}_failed`,
+        },
+      ],
+    };
+
+    await orderChannel.send({
+      content: process.env.ADMIN_USER_ID
+        ? `<@${process.env.ADMIN_USER_ID}> **Cần kiểm tra thanh toán!**`
+        : "**Cần kiểm tra thanh toán!**",
+      embeds: [adminEmbed],
+      components: [adminButtons],
+    });
+  } catch (error) {
+    console.error("Error sending to admin channel:", error);
+  }
+}
+
 // Helper functions
+function getCategoryEmoji(category) {
+  const emojis = {
+    main: "🍖",
+    soup: "🍲",
+    rice: "🍚",
+    vegetable: "🥬",
+    drink: "🥤",
+    dessert: "🍰",
+    other: "🍽️",
+  };
+  return emojis[category] || "🍽️";
+}
+
 function formatPrice(price) {
   return new Intl.NumberFormat("vi-VN", {
     style: "currency",
     currency: "VND",
   }).format(price);
+}
+
+function capitalizeFirst(str) {
+  return str.charAt(0).toUpperCase() + str.slice(1);
 }
 
 function getStatusEmoji(status) {
@@ -721,6 +1128,7 @@ module.exports = {
   handleCancelButton,
   handlePaymentButton,
   handleAdminUpdateButton,
+  handleConfirmPaymentButton,
   userCarts,
   handleQuickMenu,
 };

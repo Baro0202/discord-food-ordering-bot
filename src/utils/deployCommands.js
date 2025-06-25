@@ -1,3 +1,4 @@
+require("dotenv").config();
 const { REST, Routes } = require("discord.js");
 const fs = require("fs");
 const path = require("path");
@@ -32,6 +33,29 @@ async function setupCommands() {
 
   // Deploy commands
   try {
+    // First, clear existing commands to prevent duplicates
+    console.log("[INFO] Clearing existing commands...");
+
+    if (process.env.GUILD_ID) {
+      await rest.put(
+        Routes.applicationGuildCommands(
+          process.env.DISCORD_CLIENT_ID,
+          process.env.GUILD_ID
+        ),
+        { body: [] }
+      );
+    } else {
+      await rest.put(
+        Routes.applicationCommands(process.env.DISCORD_CLIENT_ID),
+        { body: [] }
+      );
+    }
+
+    console.log("[INFO] Existing commands cleared.");
+
+    // Wait a moment before deploying new commands
+    await new Promise((resolve) => setTimeout(resolve, 2000));
+
     console.log(
       `[INFO] Started refreshing ${commands.length} application (/) commands.`
     );
@@ -68,3 +92,10 @@ async function setupCommands() {
 }
 
 module.exports = { setupCommands };
+
+// Run if called directly
+if (require.main === module) {
+  setupCommands()
+    .then(() => console.log("Deploy completed"))
+    .catch(console.error);
+}

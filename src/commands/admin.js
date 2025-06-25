@@ -6,7 +6,7 @@ const {
   ButtonBuilder,
   ButtonStyle,
 } = require("discord.js");
-const SupabaseDatabase = require("../database/supabase");
+const { getInitializedDatabase } = require("../utils/databaseHelper");
 const moment = require("moment");
 
 module.exports = {
@@ -107,7 +107,7 @@ module.exports = {
     .addSubcommand((subcommand) =>
       subcommand
         .setName("updateorder")
-        .setDescription("Cập nhật trạng thái đơn hàng")
+        .setDescription("Cập nhật trạng thái thanh toán đơn hàng")
         .addIntegerOption((option) =>
           option
             .setName("orderid")
@@ -116,15 +116,14 @@ module.exports = {
         )
         .addStringOption((option) =>
           option
-            .setName("status")
-            .setDescription("Trạng thái mới")
+            .setName("paymentstatus")
+            .setDescription("Trạng thái thanh toán")
             .setRequired(true)
             .addChoices(
-              { name: "Chờ xử lý", value: "pending" },
-              { name: "Đã xác nhận", value: "confirmed" },
-              { name: "Đang chuẩn bị", value: "preparing" },
-              { name: "Đã giao", value: "delivered" },
-              { name: "Đã hủy", value: "cancelled" }
+              { name: "Chờ thanh toán", value: "pending" },
+              { name: "Đã thanh toán", value: "paid" },
+              { name: "Thanh toán thất bại", value: "failed" },
+              { name: "Đã hoàn tiền", value: "refunded" }
             )
         )
     )
@@ -167,13 +166,50 @@ module.exports = {
             .setDescription("Ngày (YYYY-MM-DD hoặc để trống cho hôm nay)")
             .setRequired(false)
         )
+    )
+    .addSubcommand((subcommand) =>
+      subcommand
+        .setName("sendpaymentnotify")
+        .setDescription(
+          "Gửi thông báo thanh toán đến những người chưa thanh toán"
+        )
+        .addStringOption((option) =>
+          option
+            .setName("date")
+            .setDescription("Ngày (YYYY-MM-DD hoặc để trống cho hôm nay)")
+            .setRequired(false)
+        )
+        .addStringOption((option) =>
+          option
+            .setName("message")
+            .setDescription("Tin nhắn tùy chỉnh (tùy chọn)")
+            .setRequired(false)
+        )
     ),
 
   async execute(interaction) {
-    // Only allow admin user to use admin commands
     const adminUserId = process.env.ADMIN_USER_ID;
+    const userId = interaction.user.id;
+    const username = interaction.user.username;
+    const subcommand = interaction.options.getSubcommand();
 
-    if (!adminUserId || interaction.user.id !== adminUserId) {
+    console.log(
+      `[ADMIN CHECK] User: ${username} (${userId}) | Command: ${subcommand} | Admin ID: ${adminUserId}`
+    );
+
+    // Allow myid for anyone (debugging purposes)
+    if (subcommand === "myid") {
+      await handleMyID(interaction);
+      return;
+    }
+
+    // Double check - both environment variable and hardcoded admin ID must match
+    const HARDCODED_ADMIN = "1329624897588170856";
+
+    if (!adminUserId || userId !== adminUserId || userId !== HARDCODED_ADMIN) {
+      console.log(
+        `[ADMIN DENIED] User ${username} (${userId}) attempted to use admin command: ${subcommand}`
+      );
       await interaction.reply({
         content:
           "❌ Bạn không có quyền sử dụng lệnh này! Chỉ có thể sử dụng `/menu` để đặt cơm.",
@@ -182,14 +218,14 @@ module.exports = {
       return;
     }
 
+    console.log(
+      `[ADMIN ALLOWED] User ${username} (${userId}) authorized for admin command: ${subcommand}`
+    );
     await interaction.deferReply();
 
-    const database = new SupabaseDatabase();
-    await database.init();
+    const database = await getInitializedDatabase();
 
     try {
-      const subcommand = interaction.options.getSubcommand();
-
       switch (subcommand) {
         case "additem":
           await handleAddItem(interaction, database);
@@ -212,11 +248,11 @@ module.exports = {
         case "sendmenu":
           await handleSendMenu(interaction, database);
           break;
-        case "myid":
-          await handleMyID(interaction);
-          break;
         case "summary":
           await handleSummary(interaction, database);
+          break;
+        case "sendpaymentnotify":
+          await handleSendPaymentNotify(interaction, database);
           break;
       }
     } catch (error) {
@@ -381,77 +417,49 @@ async function handleOrders(interaction, database) {
     .setTimestamp();
 
   const embeds = [summaryEmbed];
-  const components = [];
 
-  // Show detailed orders with action buttons (first 3 orders)
-  const ordersToShow = orders.slice(0, 3);
-  ordersToShow.forEach((order, index) => {
-    const isPaid = order.payment_status === "paid";
+  // Create simple list of all orders as requested
+  const orderListChunks = [];
+  let currentChunk = [];
 
-    const orderEmbed = new EmbedBuilder()
-      .setColor(
-        isPaid
-          ? 0x32cd32 // Green for paid
-          : order.status === "pending"
-          ? 0xff9900
-          : order.status === "confirmed"
-          ? 0x00ff00
-          : 0x0099ff
-      )
-      .setTitle(`📋 Đơn hàng #${order.id}`)
-      .addFields(
-        { name: "👤 Khách hàng", value: order.username, inline: true },
-        {
-          name: "💰 Tổng tiền",
-          value: formatPrice(order.total_amount),
-          inline: true,
-        },
-        {
-          name: "🚚 Trạng thái",
-          value: `${getStatusEmoji(order.status)} ${order.status}`,
-          inline: true,
-        },
-        {
-          name: "💳 Thanh toán",
-          value: isPaid ? "✅ Đã thanh toán" : "⏳ Chờ thanh toán",
-          inline: true,
-        },
-        {
-          name: "📅 Thời gian đặt",
-          value: moment(order.created_at).format("HH:mm DD/MM/YYYY"),
-          inline: true,
-        }
-      )
-      .setTimestamp();
+  orders.forEach((order) => {
+    const orderItems = order.items
+      .map((item) => `${item.name} x${item.quantity}`)
+      .join(", ");
 
-    if (isPaid) {
-      orderEmbed.setFooter({
-        text: "✅ Đã thanh toán - Không cần thao tác thêm",
-      });
-    }
+    const statusEmoji = getStatusEmoji(order.status);
+    const paymentEmoji = order.payment_status === "paid" ? "✅" : "⏳";
 
-    embeds.push(orderEmbed);
+    const orderLine = `**#${order.id}** | ${
+      order.username
+    } | ${orderItems} | ${formatPrice(
+      order.total_amount
+    )} ${statusEmoji}${paymentEmoji}`;
 
-    // Chỉ hiển thị button thanh toán nếu chưa thanh toán
-    if (!isPaid) {
-      const orderButtons = new ActionRowBuilder().addComponents(
-        new ButtonBuilder()
-          .setCustomId(`admin_payment_${order.id}_paid`)
-          .setLabel("💳 Đã thanh toán")
-          .setStyle(ButtonStyle.Success)
-      );
-
-      components.push(orderButtons);
+    // Check if adding this order would exceed Discord's field value limit (1024 chars)
+    const testChunk = [...currentChunk, orderLine].join("\n");
+    if (testChunk.length > 1000) {
+      orderListChunks.push(currentChunk.join("\n"));
+      currentChunk = [orderLine];
+    } else {
+      currentChunk.push(orderLine);
     }
   });
 
-  if (orders.length > 3) {
+  // Add the last chunk
+  if (currentChunk.length > 0) {
+    orderListChunks.push(currentChunk.join("\n"));
+  }
+
+  // Add order list chunks to the summary embed
+  orderListChunks.forEach((chunk, index) => {
     summaryEmbed.addFields({
-      name: "ℹ️ Ghi chú",
-      value: `Hiển thị 3/${orders.length} đơn hàng. Sử dụng filter để xem cụ thể hơn.`,
+      name:
+        index === 0 ? "📋 Danh sách đơn hàng" : `📋 Danh sách đơn hàng (tiếp)`,
+      value: chunk,
       inline: false,
     });
-  }
+  });
 
   // Send detailed view to admin channel
   const orderChannelId = process.env.ORDER_CHANNEL_ID;
@@ -465,7 +473,6 @@ async function handleOrders(interaction, database) {
             "DD/MM/YYYY"
           )}** (Yêu cầu bởi ${interaction.user.displayName})`,
           embeds,
-          components,
         });
 
         // Send simple summary to current channel
@@ -480,12 +487,16 @@ async function handleOrders(interaction, database) {
     }
   }
 
-  await interaction.editReply({ embeds, components });
+  await interaction.editReply({ embeds });
 }
 
 async function handleUpdateOrder(interaction, database) {
   const orderId = interaction.options.getInteger("orderid");
-  const newStatus = interaction.options.getString("status");
+  const paymentStatus = interaction.options.getString("paymentstatus");
+
+  console.log(
+    `[DEBUG] UpdateOrder - ID: ${orderId}, PaymentStatus: ${paymentStatus}`
+  );
 
   const order = await database.getOrder(orderId);
   if (!order) {
@@ -495,11 +506,21 @@ async function handleUpdateOrder(interaction, database) {
     return;
   }
 
-  await database.updateOrderStatus(orderId, newStatus);
+  // Update payment status in database
+  try {
+    await database.updatePaymentStatus(orderId, paymentStatus);
+  } catch (error) {
+    console.error("Error updating order:", error);
+    await interaction.editReply({
+      content: "❌ Có lỗi xảy ra khi cập nhật đơn hàng!",
+    });
+    return;
+  }
 
+  // Create admin confirmation embed
   const embed = new EmbedBuilder()
     .setColor(0x00ff00)
-    .setTitle("✅ Đã cập nhật đơn hàng")
+    .setTitle("✅ Đã cập nhật trạng thái thanh toán")
     .addFields(
       { name: "🆔 ID đơn hàng", value: orderId.toString(), inline: true },
       { name: "👤 Khách hàng", value: order.username, inline: true },
@@ -514,14 +535,111 @@ async function handleUpdateOrder(interaction, database) {
         inline: true,
       },
       {
-        name: "🔄 Trạng thái mới",
-        value: `${getStatusEmoji(newStatus)} ${newStatus}`,
+        name: "💳 Trạng thái thanh toán",
+        value: `${getPaymentEmoji(paymentStatus)} ${paymentStatus}`,
         inline: true,
       }
     )
     .setTimestamp();
 
   await interaction.editReply({ embeds: [embed] });
+
+  // Send notification to user if payment confirmed
+  if (paymentStatus === "paid") {
+    try {
+      console.log(
+        `[INFO] Sending payment confirmation to user ${order.user_id}`
+      );
+
+      const user = await interaction.client.users.fetch(order.user_id);
+
+      const userEmbed = new EmbedBuilder()
+        .setColor(0x00ff00)
+        .setTitle("✅ Thanh toán đã được xác nhận!")
+        .setDescription(
+          `Chào **${order.username}**!\n\nĐơn hàng #${orderId} của bạn đã được thanh toán thành công.`
+        )
+        .addFields(
+          {
+            name: "🍽️ Chi tiết đơn hàng",
+            value: order.items
+              .map((item) => `• ${item.name} x${item.quantity}`)
+              .join("\n"),
+            inline: false,
+          },
+          {
+            name: "💰 Số tiền đã thanh toán",
+            value: formatPrice(order.total_amount),
+            inline: true,
+          },
+          {
+            name: "📅 Ngày giao hàng",
+            value: moment(order.menu_date).format("DD/MM/YYYY"),
+            inline: true,
+          },
+          {
+            name: "🔄 Trạng thái hiện tại",
+            value: "✅ Đã thanh toán - Chuẩn bị giao hàng",
+            inline: true,
+          }
+        )
+        .setFooter({ text: "Cảm ơn bạn đã sử dụng dịch vụ đặt cơm!" })
+        .setTimestamp();
+
+      await user.send({ embeds: [userEmbed] });
+
+      console.log(
+        `[INFO] Payment confirmation sent to user ${order.user_id} for order #${orderId}`
+      );
+
+      // Send notification to order channel if configured
+      const orderChannelId = process.env.ORDER_CHANNEL_ID;
+      if (orderChannelId && orderChannelId !== interaction.channel.id) {
+        try {
+          const orderChannel =
+            interaction.client.channels.cache.get(orderChannelId);
+          if (orderChannel) {
+            const channelEmbed = new EmbedBuilder()
+              .setColor(0x00ff00)
+              .setTitle("💳 Xác nhận thanh toán")
+              .addFields(
+                { name: "🆔 Đơn hàng", value: `#${orderId}`, inline: true },
+                { name: "👤 Khách hàng", value: order.username, inline: true },
+                {
+                  name: "💰 Số tiền",
+                  value: formatPrice(order.total_amount),
+                  inline: true,
+                },
+                {
+                  name: "👨‍💼 Admin",
+                  value: interaction.user.displayName,
+                  inline: true,
+                }
+              )
+              .setTimestamp();
+
+            await orderChannel.send({
+              content: `✅ **Đã xác nhận thanh toán**`,
+              embeds: [channelEmbed],
+            });
+          }
+        } catch (channelError) {
+          console.error("Could not send to order channel:", channelError);
+        }
+      }
+    } catch (userError) {
+      console.log(
+        `Could not send payment confirmation to user ${order.user_id}:`,
+        userError.message
+      );
+
+      // Update admin that DM failed
+      await interaction.followUp({
+        content: `⚠️ Đã cập nhật đơn hàng nhưng không thể gửi thông báo đến user (${userError.message})`,
+        ephemeral: true,
+      });
+    }
+  }
 }
 
 async function handleListItems(interaction, database) {
@@ -702,7 +820,7 @@ async function handleSendMenu(interaction, database) {
       "**Chào mừng đến với hệ thống đặt cơm!**\n\n" +
         "🕘 **Thời gian:** Đặt cơm bất cứ lúc nào trong ngày\n" +
         "🚚 **Giao hàng:** 12:00 PM hàng ngày\n" +
-        "💳 **Thanh toán:** COD (Thanh toán khi nhận hàng)\n\n" +
+        "💳 **Thanh toán:** Momo (Thanh toán khi nhận hàng)\n\n" +
         "👇 **Nhấn button bên dưới để đặt cơm ngay!**"
     )
     .setImage("https://i.imgur.com/food-banner.jpg") // Có thể thay bằng link ảnh đẹp
@@ -776,11 +894,9 @@ async function handleSummary(interaction, database) {
   ).length;
   const cancelledCount = allOrders.length - orders.length;
 
-  // Get all menu items for reference
-  const allMenuItems = await database.getMenuItems(false);
-
-  // Aggregate food items from all orders
-  const foodSummary = {};
+  // Aggregate data by customer and dish
+  const customerSummary = {};
+  const dishSummary = {};
 
   for (const order of orders) {
     // Parse order_items (should be JSON)
@@ -795,36 +911,67 @@ async function handleSummary(interaction, database) {
       continue;
     }
 
-    // Add each item to summary
+    // Initialize customer if not exists
+    if (!customerSummary[order.username]) {
+      customerSummary[order.username] = {
+        totalAmount: 0,
+        orders: [],
+        dishes: {},
+        paymentStatus: order.payment_status,
+      };
+    }
+
+    customerSummary[order.username].totalAmount += order.total_amount;
+    customerSummary[order.username].orders.push({
+      id: order.id,
+      amount: order.total_amount,
+      status: order.status,
+      payment: order.payment_status,
+      items: orderItems,
+    });
+
+    // Add each item to customer's dishes and global dish summary
     for (const item of orderItems) {
-      const itemId = item.item_id || item.id;
       const itemName = item.name;
       const quantity = item.quantity || 1;
       const price = item.price || 0;
+      const subtotal = price * quantity;
 
-      if (!foodSummary[itemName]) {
-        foodSummary[itemName] = {
+      // Add to customer's dishes
+      if (!customerSummary[order.username].dishes[itemName]) {
+        customerSummary[order.username].dishes[itemName] = {
+          quantity: 0,
+          amount: 0,
+        };
+      }
+      customerSummary[order.username].dishes[itemName].quantity += quantity;
+      customerSummary[order.username].dishes[itemName].amount += subtotal;
+
+      // Add to global dish summary
+      if (!dishSummary[itemName]) {
+        dishSummary[itemName] = {
           totalQuantity: 0,
           totalRevenue: 0,
           unitPrice: price,
-          orders: [],
+          customers: {},
         };
       }
+      dishSummary[itemName].totalQuantity += quantity;
+      dishSummary[itemName].totalRevenue += subtotal;
 
-      foodSummary[itemName].totalQuantity += quantity;
-      foodSummary[itemName].totalRevenue += price * quantity;
-      foodSummary[itemName].orders.push({
-        orderId: order.id,
-        customer: order.username,
-        quantity: quantity,
-      });
+      if (!dishSummary[itemName].customers[order.username]) {
+        dishSummary[itemName].customers[order.username] = 0;
+      }
+      dishSummary[itemName].customers[order.username] += quantity;
     }
   }
 
-  // Create summary embed
+  // Create main summary embed
   const summaryEmbed = new EmbedBuilder()
     .setColor(0x0099ff)
-    .setTitle(`📊 Tổng hợp món ăn - ${moment(dateInput).format("DD/MM/YYYY")}`)
+    .setTitle(
+      `📊 Tổng hợp chi tiết - ${moment(dateInput).format("DD/MM/YYYY")}`
+    )
     .addFields(
       {
         name: "📋 Tổng đơn hợp lệ",
@@ -841,8 +988,7 @@ async function handleSummary(interaction, database) {
         value: `${paidOrders}/${totalOrders}`,
         inline: true,
       }
-    )
-    .setTimestamp();
+    );
 
   // Add cancelled orders info if any
   if (cancelledCount > 0) {
@@ -853,77 +999,106 @@ async function handleSummary(interaction, database) {
     });
   }
 
-  // Create food breakdown
-  const foodItems = Object.entries(foodSummary)
-    .sort((a, b) => b[1].totalQuantity - a[1].totalQuantity) // Sort by quantity DESC
-    .map(([itemName, data]) => ({
-      name: itemName,
-      quantity: data.totalQuantity,
-      revenue: data.totalRevenue,
-      unitPrice: data.unitPrice,
-      orderCount: data.orders.length,
-    }));
+  // Customer breakdown - show who ordered what
+  const customerList = Object.entries(customerSummary)
+    .sort((a, b) => b[1].totalAmount - a[1].totalAmount) // Sort by total amount DESC
+    .slice(0, 15) // Top 15 customers
+    .map(([customerName, data]) => {
+      const dishList = Object.entries(data.dishes)
+        .map(([dish, info]) => `${dish} x${info.quantity}`)
+        .join(", ");
 
-  if (foodItems.length > 0) {
-    const foodBreakdown = foodItems
-      .slice(0, 10) // Top 10 items
-      .map(
-        (item, index) =>
-          `**${index + 1}. ${item.name}**\n` +
-          `🔢 Số lượng: **${item.quantity}** phần\n` +
-          `💰 Doanh thu: **${formatPrice(item.revenue)}**\n` +
-          `👥 Số đơn: **${item.orderCount}** đơn`
-      )
-      .join("\n\n");
+      const paymentEmoji = data.paymentStatus === "paid" ? "✅" : "⏳";
 
+      return `${paymentEmoji} **${customerName}**\n${dishList}\n💰 ${formatPrice(
+        data.totalAmount
+      )}`;
+    })
+    .join("\n\n");
+
+  if (customerList) {
     summaryEmbed.addFields({
-      name: "🍽️ Top món ăn được đặt nhiều nhất",
-      value: foodBreakdown,
-      inline: false,
-    });
-
-    // Add preparation summary
-    const totalDishes = foodItems.reduce((sum, item) => sum + item.quantity, 0);
-    summaryEmbed.addFields({
-      name: "👨‍🍳 Cần chuẩn bị",
-      value: `**${totalDishes}** phần tổng cộng từ **${foodItems.length}** món khác nhau`,
+      name: "👥 Chi tiết khách hàng (top 15)",
+      value: customerList,
       inline: false,
     });
   }
 
   await interaction.editReply({ embeds: [summaryEmbed] });
 
-  // Send detailed breakdown to admin channel if configured
+  // Create detailed dish summary
+  const dishItems = Object.entries(dishSummary).sort(
+    (a, b) => b[1].totalQuantity - a[1].totalQuantity
+  );
+
+  if (dishItems.length > 0) {
+    const dishEmbed = new EmbedBuilder()
+      .setColor(0x32cd32)
+      .setTitle(
+        `🍽️ Chi tiết món ăn - ${moment(dateInput).format("DD/MM/YYYY")}`
+      );
+
+    // Show dish breakdown with customers
+    const dishBreakdown = dishItems
+      .slice(0, 10) // Top 10 dishes
+      .map(([dishName, data]) => {
+        const customerList = Object.entries(data.customers)
+          .sort((a, b) => b[1] - a[1]) // Sort by quantity DESC
+          .map(([customer, qty]) => `${customer} (${qty})`)
+          .join(", ");
+
+        return (
+          `**${dishName}** - ${data.totalQuantity} phần\n` +
+          `💰 ${formatPrice(data.totalRevenue)} | 👥 ${customerList}`
+        );
+      })
+      .join("\n\n");
+
+    dishEmbed.setDescription(dishBreakdown);
+
+    // Add preparation summary
+    const totalDishes = dishItems.reduce(
+      (sum, [, data]) => sum + data.totalQuantity,
+      0
+    );
+    dishEmbed.addFields({
+      name: "👨‍🍳 Tổng cần chuẩn bị",
+      value: `**${totalDishes}** phần từ **${dishItems.length}** món khác nhau`,
+      inline: false,
+    });
+
+    await interaction.followUp({
+      embeds: [dishEmbed],
+      ephemeral: true,
+    });
+  }
+
+  // Send kitchen preparation list to admin channel
   const orderChannelId = process.env.ORDER_CHANNEL_ID;
   if (orderChannelId && orderChannelId !== interaction.channel.id) {
     try {
       const orderChannel =
         interaction.client.channels.cache.get(orderChannelId);
       if (orderChannel) {
-        // Create detailed food list for kitchen
-        const detailedFoodList = foodItems
-          .map(
-            (item) =>
-              `**${item.name}**: ${item.quantity} phần (${formatPrice(
-                item.revenue
-              )})`
-          )
+        const kitchenList = dishItems
+          .map(([dish, data]) => `**${dish}**: ${data.totalQuantity} phần`)
           .join("\n");
 
         const kitchenEmbed = new EmbedBuilder()
-          .setColor(0x32cd32)
+          .setColor(0xff6b35)
           .setTitle(
-            `🍳 Danh sách chuẩn bị - ${moment(dateInput).format("DD/MM/YYYY")}`
+            `🍳 Danh sách bếp - ${moment(dateInput).format("DD/MM/YYYY")}`
           )
-          .setDescription(detailedFoodList)
+          .setDescription(kitchenList || "Không có món nào")
           .addFields({
             name: "📊 Tóm tắt",
-            value: `${totalOrders} đơn hợp lệ${
-              cancelledCount > 0 ? ` (${cancelledCount} đơn đã hủy)` : ""
-            } | ${totalDishes} phần | ${formatPrice(totalAmount)}`,
+            value: `${totalOrders} đơn | ${dishItems.reduce(
+              (sum, [, data]) => sum + data.totalQuantity,
+              0
+            )} phần | ${formatPrice(totalAmount)}`,
             inline: false,
           })
-          .setFooter({ text: `Yêu cầu bởi ${interaction.user.displayName}` })
+          .setFooter({ text: `Yêu cầu: ${interaction.user.displayName}` })
           .setTimestamp();
 
         await orderChannel.send({
@@ -932,13 +1107,296 @@ async function handleSummary(interaction, database) {
         });
 
         await interaction.followUp({
-          content: `✅ Đã gửi danh sách chuẩn bị đến <#${orderChannelId}>`,
+          content: `✅ Đã gửi danh sách bếp đến <#${orderChannelId}>`,
           ephemeral: true,
         });
       }
     } catch (error) {
       console.error("Could not send to admin channel:", error);
     }
+  }
+}
+
+async function handleSendPaymentNotify(interaction, database) {
+  const dateInput =
+    interaction.options.getString("date") || moment().format("YYYY-MM-DD");
+  const customMessage = interaction.options.getString("message") || "";
+
+  console.log(`[DEBUG] Starting sendpaymentnotify for date: ${dateInput}`);
+
+  try {
+    console.log(`[DEBUG] Getting orders for date: ${dateInput}`);
+    const allOrders = await database.getOrdersByDate(dateInput);
+    console.log(`[DEBUG] Found ${allOrders.length} total orders`);
+
+    // Filter orders that need payment notification
+    const pendingOrders = allOrders.filter(
+      (order) =>
+        order.payment_status === "pending" && order.status !== "cancelled"
+    );
+    console.log(
+      `[DEBUG] Found ${pendingOrders.length} pending payment orders (excluding cancelled)`
+    );
+
+    if (pendingOrders.length === 0) {
+      console.log(`[DEBUG] No pending orders, sending response to admin`);
+      await interaction.editReply({
+        embeds: [
+          {
+            color: 0xff9900,
+            title: "📋 Không có đơn hàng chờ thanh toán",
+            description: `Không có đơn hàng nào cần thanh toán cho ngày ${moment(
+              dateInput
+            ).format("DD/MM/YYYY")} (đã loại bỏ đơn hủy)`,
+            timestamp: new Date(),
+          },
+        ],
+      });
+      return;
+    }
+
+    // Group orders by user
+    console.log(`[DEBUG] Grouping orders by user...`);
+    const userOrders = {};
+    pendingOrders.forEach((order) => {
+      if (!userOrders[order.user_id]) {
+        userOrders[order.user_id] = {
+          username: order.username,
+          orders: [],
+          totalAmount: 0,
+        };
+      }
+      userOrders[order.user_id].orders.push(order);
+      userOrders[order.user_id].totalAmount += parseFloat(order.total_amount);
+    });
+
+    const userIds = Object.keys(userOrders);
+    console.log(
+      `[DEBUG] Found ${userIds.length} unique users with pending payments`
+    );
+
+    let sentCount = 0;
+    let failedCount = 0;
+    const failedUsers = [];
+
+    // Send notifications to each user
+    console.log(`[DEBUG] Starting to send notifications...`);
+    for (const userId of userIds) {
+      try {
+        console.log(
+          `[DEBUG] Processing user ${userId} (${userOrders[userId].username})`
+        );
+
+        console.log(`[DEBUG] Fetching user object from Discord...`);
+        const user = await interaction.client.users.fetch(userId);
+        console.log(`[DEBUG] Successfully fetched user: ${user.username}`);
+
+        const userData = userOrders[userId];
+
+        // Create notification embed
+        console.log(`[DEBUG] Creating notification embed...`);
+        const notificationEmbed = new EmbedBuilder()
+          .setColor(0xff9900)
+          .setTitle("🔔 Thông báo thanh toán tiền cơm")
+          .setDescription(
+            customMessage ||
+              `Chào **${userData.username}**!\n\nBạn có đơn hàng chưa thanh toán. Vui lòng thanh toán để đảm bảo việc giao hàng đúng hẹn.`
+          )
+          .addFields(
+            {
+              name: "📅 Ngày giao hàng",
+              value: moment(dateInput).format("DD/MM/YYYY"),
+              inline: true,
+            },
+            {
+              name: "📦 Số đơn hàng",
+              value: userData.orders.length.toString(),
+              inline: true,
+            },
+            {
+              name: "💰 Tổng tiền cần thanh toán",
+              value: formatPrice(userData.totalAmount),
+              inline: true,
+            }
+          )
+          .setTimestamp();
+
+        // Add order details
+        console.log(`[DEBUG] Building order details...`);
+        let orderDetails = "";
+        userData.orders.forEach((order) => {
+          const orderItems = order.items
+            .map((item) => `• ${item.name} x${item.quantity}`)
+            .join("\n");
+          orderDetails += `**🛍️ Đơn hàng #${
+            order.id
+          }**\n${orderItems}\n💰 **${formatPrice(order.total_amount)}**\n\n`;
+        });
+
+        if (orderDetails.length > 1000) {
+          orderDetails = orderDetails.substring(0, 1000) + "...";
+        }
+
+        notificationEmbed.addFields({
+          name: "🍽️ Chi tiết đơn hàng",
+          value: orderDetails || "Không có chi tiết",
+          inline: false,
+        });
+
+        notificationEmbed.addFields({
+          name: "💳 Hướng dẫn thanh toán",
+          value:
+            "• Sử dụng lệnh `/pay` để xem chi tiết thanh toán\n• Quét mã QR MoMo để thanh toán\n• Sau khi chuyển khoản, nhấn nút **✅ Đã chuyển khoản**\n• Admin sẽ xác nhận và cập nhật trạng thái đơn hàng",
+          inline: false,
+        });
+
+        notificationEmbed.setFooter({
+          text: "Cảm ơn bạn đã sử dụng dịch vụ đặt cơm! Vui lòng thanh toán sớm.",
+        });
+
+        // Create action buttons
+        console.log(`[DEBUG] Creating action buttons...`);
+        const buttons = new ActionRowBuilder();
+
+        if (userData.orders.length === 1) {
+          // Single order - direct payment button
+          buttons.addComponents(
+            new ButtonBuilder()
+              .setCustomId(`payment_${userData.orders[0].id}`)
+              .setLabel("💳 Thanh toán ngay")
+              .setStyle(ButtonStyle.Success)
+          );
+        } else {
+          // Multiple orders - general pay command
+          buttons.addComponents(
+            new ButtonBuilder()
+              .setCustomId(`quick_menu_null`)
+              .setLabel("💳 Xem tất cả đơn hàng")
+              .setStyle(ButtonStyle.Primary)
+          );
+        }
+
+        console.log(`[DEBUG] Sending DM to user ${userId}...`);
+        await user.send({
+          embeds: [notificationEmbed],
+          components: [buttons],
+        });
+
+        sentCount++;
+        console.log(
+          `[INFO] Payment notification sent to ${userData.username} (${userId})`
+        );
+      } catch (error) {
+        failedCount++;
+        failedUsers.push(userOrders[userId].username);
+        console.error(
+          `[ERROR] Failed to send payment notification to ${userId}:`,
+          error.message
+        );
+      }
+    }
+
+    console.log(
+      `[DEBUG] Finished sending notifications. Sent: ${sentCount}, Failed: ${failedCount}`
+    );
+    console.log(`[DEBUG] Creating summary embed...`);
+
+    // Send summary to admin
+    const summaryEmbed = new EmbedBuilder()
+      .setColor(sentCount > 0 ? 0x00ff00 : 0xff0000)
+      .setTitle("📤 Kết quả gửi thông báo thanh toán")
+      .addFields(
+        {
+          name: "📅 Ngày",
+          value: moment(dateInput).format("DD/MM/YYYY"),
+          inline: true,
+        },
+        {
+          name: "📦 Tổng đơn hàng",
+          value: pendingOrders.length.toString(),
+          inline: true,
+        },
+        {
+          name: "👥 Người dùng",
+          value: userIds.length.toString(),
+          inline: true,
+        },
+        {
+          name: "✅ Gửi thành công",
+          value: sentCount.toString(),
+          inline: true,
+        },
+        {
+          name: "❌ Gửi thất bại",
+          value: failedCount.toString(),
+          inline: true,
+        },
+        {
+          name: "💰 Tổng tiền chờ thanh toán",
+          value: formatPrice(
+            Object.values(userOrders).reduce(
+              (sum, userData) => sum + userData.totalAmount,
+              0
+            )
+          ),
+          inline: true,
+        }
+      )
+      .setTimestamp();
+
+    if (customMessage) {
+      summaryEmbed.addFields({
+        name: "💬 Tin nhắn tùy chỉnh",
+        value: customMessage,
+        inline: false,
+      });
+    }
+
+    if (failedUsers.length > 0) {
+      summaryEmbed.addFields({
+        name: "⚠️ Không thể gửi thông báo đến",
+        value: failedUsers.join(", "),
+        inline: false,
+      });
+    }
+
+    console.log(`[DEBUG] Sending reply to admin...`);
+    await interaction.editReply({
+      embeds: [summaryEmbed],
+    });
+
+    console.log(`[DEBUG] Sending notification to order channel...`);
+    // Send notification to order channel if configured
+    const orderChannelId = process.env.ORDER_CHANNEL_ID;
+    if (orderChannelId && orderChannelId !== interaction.channel.id) {
+      try {
+        const orderChannel =
+          interaction.client.channels.cache.get(orderChannelId);
+        if (orderChannel) {
+          await orderChannel.send({
+            content: `🔔 **Admin ${interaction.user.displayName} đã gửi thông báo thanh toán**`,
+            embeds: [summaryEmbed],
+          });
+        }
+      } catch (error) {
+        console.error("Could not send to order channel:", error);
+      }
+    }
+
+    console.log(`[DEBUG] sendpaymentnotify completed successfully`);
+  } catch (error) {
+    console.error("Error in handleSendPaymentNotify:", error);
+    await interaction.editReply({
+      embeds: [
+        {
+          color: 0xff0000,
+          title: "❌ Lỗi gửi thông báo",
+          description:
+            "Có lỗi xảy ra khi gửi thông báo thanh toán. Vui lòng thử lại!",
+          timestamp: new Date(),
+        },
+      ],
+    });
   }
 }
 
