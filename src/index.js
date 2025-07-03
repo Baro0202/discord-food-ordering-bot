@@ -162,9 +162,9 @@ class FoodOrderBot {
       }
     );
 
-    // Schedule order deadline reminder at 9:30 AM (Monday to Friday) - 15 minutes before deadline
+    // Schedule order deadline reminder at 10:45 AM (Monday to Friday) - 15 minutes before deadline
     cron.schedule(
-      "30 9 * * 1-5",
+      "45 10 * * 1-5",
       async () => {
         console.log("[CRON] Sending order deadline reminder...");
         await this.sendDeadlineReminder();

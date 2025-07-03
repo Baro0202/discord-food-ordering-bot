@@ -1,8 +1,8 @@
 # Multi-stage build for optimized image
 FROM node:18-alpine AS base
 
-# Install tzdata for timezone support and curl for health checks
-RUN apk add --no-cache tzdata curl
+# Install tzdata for timezone support, curl for health checks, and yarn
+RUN apk add --no-cache tzdata curl yarn
 
 # Set timezone
 ENV TZ=Asia/Ho_Chi_Minh
@@ -16,16 +16,16 @@ RUN addgroup -g 1001 -S nodejs && \
 
 # Dependencies stage
 FROM base AS deps
-COPY package*.json ./
-RUN npm ci --omit=dev && npm cache clean --force
+COPY package.json yarn.lock ./
+RUN yarn install --frozen-lockfile --production && yarn cache clean
 
 # Build stage
 FROM base AS build
-COPY package*.json ./
-RUN npm ci
+COPY package.json yarn.lock ./
+RUN yarn install --frozen-lockfile
 COPY . .
 # No build step needed for this Node.js app, but could add linting/testing here
-RUN npm run test-kafka || echo "Tests completed"
+RUN yarn test-kafka || echo "Tests completed"
 
 # Production stage
 FROM base AS runner
@@ -54,4 +54,4 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=15s --retries=3 \
   CMD curl -f http://localhost:${PORT:-3000}/health || exit 1
 
 # Start the application
-CMD ["npm", "start"]
+CMD ["yarn", "start"]
