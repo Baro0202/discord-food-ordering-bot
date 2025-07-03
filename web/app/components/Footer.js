@@ -99,30 +99,6 @@ export const Footer = () => {
             </div>
           </div>
 
-          {/* Quick Links */}
-          <div className="space-y-6">
-            <h3 className="text-xl font-bold flex items-center">
-              <UtensilsCrossed className="h-5 w-5 mr-2 text-purple-400" />
-              Liên kết nhanh
-            </h3>
-            <ul className="space-y-3">
-              {quickLinks.map((link, index) => (
-                <li key={index}>
-                  <Button
-                    variant="link"
-                    asChild
-                    className="h-auto p-0 text-gray-300 hover:text-white justify-start"
-                  >
-                    <Link href={link.href} className="flex items-center group">
-                      <ExternalLink className="h-3 w-3 mr-2 opacity-0 group-hover:opacity-100 transition-opacity" />
-                      {link.label}
-                    </Link>
-                  </Button>
-                </li>
-              ))}
-            </ul>
-          </div>
-
           {/* Support */}
           <div className="space-y-6">
             <h3 className="text-xl font-bold flex items-center">
