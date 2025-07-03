@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, Suspense } from "react";
 import { useSearchParams, useRouter } from "next/navigation";
 import Link from "next/link";
 import { createClient } from "../../lib/supabase";
@@ -28,7 +28,7 @@ import {
   Calendar,
 } from "lucide-react";
 
-export default function ThankYouPage() {
+function ThankYouContent() {
   const searchParams = useSearchParams();
   const router = useRouter();
   const orderId = searchParams.get("orderId");
@@ -344,5 +344,28 @@ export default function ThankYouPage() {
         </CardContent>
       </Card>
     </div>
+  );
+}
+
+// Wrapper component with Suspense boundary
+export default function ThankYouPage() {
+  return (
+    <Suspense
+      fallback={
+        <div className="min-h-96 flex items-center justify-center">
+          <Card className="w-full max-w-md">
+            <CardContent className="pt-8 pb-8 text-center">
+              <Loader2 className="h-12 w-12 animate-spin text-green-600 mx-auto mb-4" />
+              <h3 className="text-lg font-semibold mb-2">Đang tải trang...</h3>
+              <p className="text-muted-foreground">
+                Vui lòng chờ trong giây lát
+              </p>
+            </CardContent>
+          </Card>
+        </div>
+      }
+    >
+      <ThankYouContent />
+    </Suspense>
   );
 }

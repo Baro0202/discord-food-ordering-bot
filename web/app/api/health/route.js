@@ -1,6 +1,9 @@
 import { EnhancedWebDatabase } from "../../../lib/enhancedDatabase";
 import { NextResponse } from "next/server";
 
+// Force dynamic rendering since we use request.headers
+export const dynamic = "force-dynamic";
+
 export async function GET(request) {
   try {
     // Health endpoint might be called by monitoring tools, so make security optional
