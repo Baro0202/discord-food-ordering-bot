@@ -2,7 +2,7 @@
 @tailwind components;
 @tailwind utilities;
 
-/* Animation delay utilities for security modal */
+/* Custom animation utilities */
 .animation-delay-500 {
   /* animation-delay: 0.5s; */
 }
@@ -17,37 +17,6 @@
 
 .animation-delay-2000 {
   /* animation-delay: 2s; */
-}
-
-/* Security protection styles */
-.protected {
-  -webkit-user-select: none;
-  -moz-user-select: none;
-  -ms-user-select: none;
-  user-select: none;
-  -webkit-touch-callout: none;
-  -webkit-tap-highlight-color: transparent;
-}
-
-/* Disable text selection globally when protection is active */
-.no-select * {
-  -webkit-user-select: none !important;
-  -moz-user-select: none !important;
-  -ms-user-select: none !important;
-  user-select: none !important;
-  -webkit-touch-callout: none !important;
-  -webkit-tap-highlight-color: transparent !important;
-}
-
-/* Hide scrollbars when modal is open */
-.modal-open {
-  overflow: hidden !important;
-}
-
-/* Blur effect for content behind modal */
-.security-blur {
-  filter: blur(8px);
-  transition: filter 0.3s ease;
 }
 
 :root {

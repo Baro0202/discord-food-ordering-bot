@@ -4,7 +4,6 @@ import { AuthProvider } from "./providers/AuthProvider";
 import { Navbar } from "./components/Navbar";
 import { Footer } from "./components/Footer";
 import SecurityWrapper from "./components/SecurityWrapper";
-import SecurityToggle from "./components/SecurityToggle";
 
 const inter = Inter({ subsets: ["latin"] });
 
@@ -25,7 +24,6 @@ export default function RootLayout({ children }) {
               <Footer />
             </div>
           </SecurityWrapper>
-          <SecurityToggle />
         </AuthProvider>
       </body>
     </html>

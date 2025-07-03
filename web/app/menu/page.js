@@ -3,7 +3,7 @@
 import { useState, useEffect } from "react";
 import { useAuth } from "../providers/AuthProvider";
 import { createClient } from "../../lib/supabase";
-import { secureApi, SecureApiError } from "../../lib/secureApi";
+import { secureApi } from "../../lib/secureApi";
 import Link from "next/link";
 import { Button } from "@/components/ui/button";
 import {
@@ -258,15 +258,8 @@ export default function MenuPage() {
         result.data.id
       );
     } catch (err) {
-      if (err instanceof SecureApiError) {
-        setError("🚫 " + err.message);
-        console.error(
-          "[SECURITY] DevTools detected during checkout:",
-          err.code
-        );
-      } else {
-        setError("Không thể đặt hàng: " + err.message);
-      }
+      setError("Không thể đặt hàng: " + err.message);
+      console.error("[ERROR] Checkout failed:", err);
     } finally {
       setIsCheckingOut(false);
     }
