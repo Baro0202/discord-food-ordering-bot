@@ -388,7 +388,7 @@ export default function HomePage() {
             {features.map((feature, index) => (
               <Card
                 key={index}
-                className="group relative overflow-hidden border-0 bg-gradient-to-br from-slate-800/50 to-slate-900/50 backdrop-blur-xl hover:shadow-2xl hover:shadow-purple-500/20 transition-all duration-700 hover:-translate-y-4"
+                className="group test relative overflow-hidden border-0 bg-gradient-to-br from-slate-800/50 to-slate-900/50 backdrop-blur-xl hover:shadow-2xl hover:shadow-purple-500/20 transition-all duration-700 hover:-translate-y-4"
               >
                 {/* Holographic border effect */}
                 <div className="absolute inset-0 bg-gradient-to-r from-cyan-400/20 via-purple-400/20 to-pink-400/20 rounded-xl blur-sm opacity-0 group-hover:opacity-100 transition-all duration-500"></div>
