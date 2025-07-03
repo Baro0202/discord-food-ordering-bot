@@ -286,6 +286,17 @@ class Database {
     );
   }
 
+  // Get all pending payment orders (for payment notifications)
+  async getPendingPaymentOrders() {
+    const orders = await this.all(
+      "SELECT * FROM orders WHERE payment_status = 'pending' AND status != 'cancelled' ORDER BY menu_date ASC, created_at DESC"
+    );
+    return orders.map((order) => {
+      order.items = JSON.parse(order.items);
+      return order;
+    });
+  }
+
   // User methods
   async upsertUser(userId, username, displayName = null) {
     return this.run(

@@ -7,15 +7,16 @@ Tính năng **Gửi Thông Báo Thanh Toán** cho phép admin gửi thông báo 
 ## Lệnh Sử Dụng
 
 ```
-/admin sendpaymentnotify [date] [message]
+/admin sendpaymentnotify [message]
 ```
 
 ### Tham Số
 
-| Tham số   | Kiểu   | Bắt buộc | Mô tả                                                  |
-| --------- | ------ | -------- | ------------------------------------------------------ |
-| `date`    | String | ❌       | Ngày cần gửi thông báo (YYYY-MM-DD). Mặc định: hôm nay |
-| `message` | String | ❌       | Tin nhắn tùy chỉnh thêm vào thông báo                  |
+| Tham số   | Kiểu   | Bắt buộc | Mô tả                                 |
+| --------- | ------ | -------- | ------------------------------------- |
+| `message` | String | ❌       | Tin nhắn tùy chỉnh thêm vào thông báo |
+
+**✨ Thay đổi mới**: Lệnh hiện tại sẽ gửi thông báo cho **tất cả** đơn hàng chưa thanh toán trong hệ thống, không giới hạn theo ngày.
 
 ## Tính Năng Chính
 
@@ -51,37 +52,31 @@ Tính năng **Gửi Thông Báo Thanh Toán** cho phép admin gửi thông báo 
 
 ## Ví Dụ Sử Dụng
 
-### 1. Gửi thông báo cho hôm nay
+### 1. Gửi thông báo cho tất cả đơn hàng chưa thanh toán
 
 ```
 /admin sendpaymentnotify
 ```
 
-### 2. Gửi thông báo cho ngày cụ thể
-
-```
-/admin sendpaymentnotify date:2024-01-15
-```
-
-### 3. Gửi thông báo với tin nhắn tùy chỉnh
+### 2. Gửi thông báo với tin nhắn tùy chỉnh
 
 ```
 /admin sendpaymentnotify message:"Hạn thanh toán là 15h hôm nay! Vui lòng thanh toán sớm để đảm bảo giao hàng đúng giờ."
 ```
 
-### 4. Kết hợp cả hai
+### 3. Thông báo khuyến mãi
 
 ```
-/admin sendpaymentnotify date:2024-01-15 message:"Khuyến mãi: Thanh toán trước 14h được giảm 5%!"
+/admin sendpaymentnotify message:"Khuyến mãi: Thanh toán trước 14h được giảm 5%!"
 ```
 
 ## Luồng Hoạt Động
 
 1. **Admin thực hiện lệnh** → Hệ thống nhận yêu cầu
-2. **Lọc đơn hàng** → Tìm tất cả đơn hàng `payment_status = "pending"`
-3. **Nhóm theo người dùng** → Gộp các đơn hàng của cùng một user
-4. **Gửi thông báo** → Gửi DM đến từng người dùng
-5. **Báo cáo kết quả** → Hiển thị thống kê cho admin
+2. **Lọc đơn hàng** → Tìm **tất cả** đơn hàng `payment_status = "pending"` trong hệ thống
+3. **Nhóm theo người dùng** → Gộp các đơn hàng của cùng một user (có thể từ nhiều ngày khác nhau)
+4. **Gửi thông báo** → Gửi DM đến từng người dùng với tổng hợp tất cả đơn chưa thanh toán
+5. **Báo cáo kết quả** → Hiển thị thống kê cho admin với khoảng ngày giao hàng
 6. **Thông báo admin channel** → Gửi thông báo đến channel quản trị (nếu có)
 
 ## Nội Dung Thông Báo Gửi Đến User

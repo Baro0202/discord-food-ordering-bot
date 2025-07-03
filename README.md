@@ -103,7 +103,7 @@ npm run dev
 - \`/admin updateorder\` - Cập nhật trạng thái đơn hàng
 - \`/admin listitems\` - Xem tất cả món ăn
 - \`/admin stats\` - Xem thống kê
-- \`/admin sendpaymentnotify\` - Gửi thông báo thanh toán đến tất cả người dùng có đơn hàng chưa thanh toán
+- \`/admin sendpaymentnotify\` - Gửi thông báo thanh toán đến tất cả người dùng có đơn hàng chưa thanh toán (bất kể ngày)
 
 ### Quy trình đặt hàng
 

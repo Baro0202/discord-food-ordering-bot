@@ -171,13 +171,7 @@ module.exports = {
       subcommand
         .setName("sendpaymentnotify")
         .setDescription(
-          "Gửi thông báo thanh toán đến những người chưa thanh toán"
-        )
-        .addStringOption((option) =>
-          option
-            .setName("date")
-            .setDescription("Ngày (YYYY-MM-DD hoặc để trống cho hôm nay)")
-            .setRequired(false)
+          "Gửi thông báo thanh toán đến tất cả người có đơn hàng chưa thanh toán"
         )
         .addStringOption((option) =>
           option
@@ -1118,22 +1112,13 @@ async function handleSummary(interaction, database) {
 }
 
 async function handleSendPaymentNotify(interaction, database) {
-  const dateInput =
-    interaction.options.getString("date") || moment().format("YYYY-MM-DD");
   const customMessage = interaction.options.getString("message") || "";
 
-  console.log(`[DEBUG] Starting sendpaymentnotify for date: ${dateInput}`);
+  console.log(`[DEBUG] Starting sendpaymentnotify for all pending orders`);
 
   try {
-    console.log(`[DEBUG] Getting orders for date: ${dateInput}`);
-    const allOrders = await database.getOrdersByDate(dateInput);
-    console.log(`[DEBUG] Found ${allOrders.length} total orders`);
-
-    // Filter orders that need payment notification
-    const pendingOrders = allOrders.filter(
-      (order) =>
-        order.payment_status === "pending" && order.status !== "cancelled"
-    );
+    console.log(`[DEBUG] Getting all pending payment orders`);
+    const pendingOrders = await database.getPendingPaymentOrders();
     console.log(
       `[DEBUG] Found ${pendingOrders.length} pending payment orders (excluding cancelled)`
     );
@@ -1145,9 +1130,7 @@ async function handleSendPaymentNotify(interaction, database) {
           {
             color: 0xff9900,
             title: "📋 Không có đơn hàng chờ thanh toán",
-            description: `Không có đơn hàng nào cần thanh toán cho ngày ${moment(
-              dateInput
-            ).format("DD/MM/YYYY")} (đã loại bỏ đơn hủy)`,
+            description: `Không có đơn hàng nào cần thanh toán trong hệ thống (đã loại bỏ đơn hủy)`,
             timestamp: new Date(),
           },
         ],
@@ -1195,17 +1178,28 @@ async function handleSendPaymentNotify(interaction, database) {
 
         // Create notification embed
         console.log(`[DEBUG] Creating notification embed...`);
+        // Get earliest and latest delivery dates
+        const deliveryDates = userData.orders
+          .map((order) => order.menu_date)
+          .sort();
+        const dateRangeText =
+          deliveryDates.length === 1
+            ? moment(deliveryDates[0]).format("DD/MM/YYYY")
+            : `${moment(deliveryDates[0]).format("DD/MM")} - ${moment(
+                deliveryDates[deliveryDates.length - 1]
+              ).format("DD/MM/YYYY")}`;
+
         const notificationEmbed = new EmbedBuilder()
           .setColor(0xff9900)
           .setTitle("🔔 Thông báo thanh toán tiền cơm")
           .setDescription(
             customMessage ||
-              `Chào **${userData.username}**!\n\nBạn có đơn hàng chưa thanh toán. Vui lòng thanh toán để đảm bảo việc giao hàng đúng hẹn.`
+              `Chào **${userData.username}**!\n\nBạn có ${userData.orders.length} đơn hàng chưa thanh toán. Vui lòng thanh toán để đảm bảo việc giao hàng đúng hẹn.`
           )
           .addFields(
             {
               name: "📅 Ngày giao hàng",
-              value: moment(dateInput).format("DD/MM/YYYY"),
+              value: dateRangeText,
               inline: true,
             },
             {
@@ -1221,16 +1215,18 @@ async function handleSendPaymentNotify(interaction, database) {
           )
           .setTimestamp();
 
-        // Add order details
+        // Add order details with delivery dates
         console.log(`[DEBUG] Building order details...`);
         let orderDetails = "";
         userData.orders.forEach((order) => {
           const orderItems = order.items
             .map((item) => `• ${item.name} x${item.quantity}`)
             .join("\n");
-          orderDetails += `**🛍️ Đơn hàng #${
-            order.id
-          }**\n${orderItems}\n💰 **${formatPrice(order.total_amount)}**\n\n`;
+          orderDetails += `**🛍️ Đơn hàng #${order.id}** (📅 ${moment(
+            order.menu_date
+          ).format("DD/MM")})\n${orderItems}\n💰 **${formatPrice(
+            order.total_amount
+          )}**\n\n`;
         });
 
         if (orderDetails.length > 1000) {
@@ -1238,7 +1234,7 @@ async function handleSendPaymentNotify(interaction, database) {
         }
 
         notificationEmbed.addFields({
-          name: "🍽️ Chi tiết đơn hàng",
+          name: "🍽️ Chi tiết tất cả đơn hàng chưa thanh toán",
           value: orderDetails || "Không có chi tiết",
           inline: false,
         });
@@ -1301,14 +1297,24 @@ async function handleSendPaymentNotify(interaction, database) {
     );
     console.log(`[DEBUG] Creating summary embed...`);
 
+    // Get date range for summary
+    const allDates = pendingOrders.map((order) => order.menu_date).sort();
+    const uniqueDates = [...new Set(allDates)];
+    const dateRange =
+      uniqueDates.length === 1
+        ? moment(uniqueDates[0]).format("DD/MM/YYYY")
+        : `${moment(uniqueDates[0]).format("DD/MM")} - ${moment(
+            uniqueDates[uniqueDates.length - 1]
+          ).format("DD/MM/YYYY")}`;
+
     // Send summary to admin
     const summaryEmbed = new EmbedBuilder()
       .setColor(sentCount > 0 ? 0x00ff00 : 0xff0000)
       .setTitle("📤 Kết quả gửi thông báo thanh toán")
       .addFields(
         {
-          name: "📅 Ngày",
-          value: moment(dateInput).format("DD/MM/YYYY"),
+          name: "📅 Khoảng ngày giao",
+          value: dateRange,
           inline: true,
         },
         {

@@ -284,6 +284,20 @@ class SupabaseDatabase {
     return data;
   }
 
+  // Get all pending payment orders (for payment notifications)
+  async getPendingPaymentOrders() {
+    const { data, error } = await this.supabase
+      .from("orders")
+      .select("*")
+      .eq("payment_status", "pending")
+      .neq("status", "cancelled")
+      .order("menu_date", { ascending: true })
+      .order("created_at", { ascending: false });
+
+    if (error) throw error;
+    return data || [];
+  }
+
   // Users
   async upsertUser(userId, username, displayName = null) {
     const { data, error } = await this.supabase
